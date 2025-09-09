@@ -71,6 +71,35 @@ class GiveawayView(discord.ui.View):
         else:
             giveaway['participants'].add(user_id)
             await interaction.response.send_message('✅ Vous participez maintenant au giveaway! Bonne chance!', ephemeral=True)
+        
+        # Mise à jour de l'embed avec le nouveau nombre de participants
+        await self.update_giveaway_embed(interaction)
+    
+    async def update_giveaway_embed(self, interaction):
+        """Met à jour l'embed avec le nombre de participants"""
+        giveaway = active_giveaways.get(self.giveaway_id)
+        if not giveaway:
+            return
+            
+        # Récupération des infos du giveaway
+        end_time = giveaway['end_time']
+        participants_count = len(giveaway['participants'])
+        
+        # Création du nouvel embed
+        embed = discord.Embed(
+            title='🎉 GIVEAWAY 🎉',
+            description=f"**Prix:** {giveaway['prize']}\n**Gagnants:** {giveaway['winners']}\n**Participants:** {participants_count}\n**Fin:** <t:{int(end_time.timestamp())}:R>\n**Organisé par:** <@{giveaway['host_id']}>",
+            color=CONFIG['embed_color'],
+            timestamp=end_time
+        )
+        embed.set_footer(text=f"ID: {self.giveaway_id} • Cliquez sur le bouton pour participer!")
+        
+        try:
+            # Mise à jour du message original (pas une réponse à l'interaction)
+            await interaction.edit_original_response(embed=embed, view=self)
+        except:
+            # Si l'edit échoue, on ignore (le message sera mis à jour au prochain clic)
+            pass
 
 @bot.command(name='giveaway', aliases=['g'])
 async def create_giveaway(ctx, duration: str = None, winners: int = None, *, prize: str = None):
@@ -107,16 +136,15 @@ async def create_giveaway(ctx, duration: str = None, winners: int = None, *, pri
     # Création de l'embed
     embed = discord.Embed(
         title='🎉 GIVEAWAY 🎉',
-        description=f"**Prix:** {prize}\n**Gagnants:** {winners}\n**Fin:** <t:{int(end_time.timestamp())}:R>\n**Organisé par:** {ctx.author.mention}",
+        description=f"**Prix:** {prize}\n**Gagnants:** {winners}\n**Participants:** 0\n**Fin:** <t:{int(end_time.timestamp())}:R>\n**Organisé par:** {ctx.author.mention}",
         color=CONFIG['embed_color'],
         timestamp=end_time
     )
-    embed.set_footer(text=f"ID: {giveaway_id} • Réagissez avec 🎉 pour participer!")
+    embed.set_footer(text=f"ID: {giveaway_id} • Cliquez sur le bouton pour participer!")
 
     # Envoi du message avec bouton
     view = GiveawayView(giveaway_id)
     giveaway_message = await ctx.send(embed=embed, view=view)
-    await giveaway_message.add_reaction('🎉')
 
     # Stockage du giveaway
     active_giveaways[giveaway_id] = {
@@ -206,7 +234,13 @@ async def reroll_giveaway(ctx, message_id: int = None):
             return
 
         winner = random.choice(participants)
-        prize = message.embeds[0].description.split('**Prix:** ')[1].split('\n')[0]
+        
+        # Récupérer le prix depuis l'embed
+        embed_desc = message.embeds[0].description
+        if '**Prix:**' in embed_desc:
+            prize = embed_desc.split('**Prix:** ')[1].split('\n')[0]
+        else:
+            prize = "Prix inconnu"
 
         await ctx.send(f'🎊 Nouveau tirage! Le gagnant est {winner.mention} pour: **{prize}**!')
 
@@ -379,7 +413,13 @@ if __name__ == '__main__':
 2. requirements.txt (voir ci-dessous)
 
 📋 requirements.txt:
-discord.py==2.3.2
+discord.py>=2.3.0,<2.4.0
+
+🐍 .python-version:
+3.11
+
+📄 runtime.txt:
+python-3.11.9
 
 🚀 CONFIGURATION KOYEB:
 1. Créez un repo GitHub avec main.py et requirements.txt  
