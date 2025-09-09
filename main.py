@@ -2,6 +2,17 @@
 # Requirements: discord.py, asyncio
 # Installation: pip install discord.py
 
+# Fix pour Python 3.13+ - Module audioop manquant
+import sys
+if sys.version_info >= (3, 13):
+    import warnings
+    warnings.filterwarnings("ignore", message=".*audioop.*")
+    
+    # Mock du module audioop pour éviter l'erreur
+    import types
+    audioop = types.ModuleType('audioop')
+    sys.modules['audioop'] = audioop
+
 import discord
 from discord.ext import commands, tasks
 import asyncio
@@ -10,12 +21,15 @@ import datetime
 import re
 import os
 
-# Configuration du bot
+# Configuration du bot (sans voice pour éviter audioop)
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.guild_messages = True
 intents.reactions = True
+
+# Désactiver les intents voice pour éviter les problèmes audioop
+intents.voice_states = False
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
