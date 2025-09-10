@@ -1,4 +1,4 @@
-# Bot Discord Giveaway + Vocal Dashboard en Python
+# Bot Discord Giveaway + Vocal Simplifié en Python
 # Requirements: discord.py, asyncio
 # Installation: pip install discord.py
 
@@ -20,7 +20,6 @@ import random
 import datetime
 import re
 import os
-import json
 
 # Configuration du bot
 intents = discord.Intents.default()
@@ -30,14 +29,14 @@ intents.guild_messages = True
 intents.reactions = True
 intents.voice_states = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # Stockage des giveaways actifs
 active_giveaways = {}
 
-# Stockage des salons vocaux temporaires et leurs salons texte
+# Stockage des salons vocaux temporaires
 temp_channels = {}
-voice_config = {}
+creation_channels = {}  # {guild_id: channel_id}
 
 # Configuration
 CONFIG = {
@@ -52,14 +51,48 @@ CONFIG = {
 @bot.event
 async def on_ready():
     print(f'✅ Bot connecté en tant que {bot.user}!')
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="🎉 Giveaways & 🔊 Dashboard Vocal"))
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="🎉 Giveaways & 🔊 Vocaux"))
     
-    # Nettoyer les anciens salons vocaux temporaires au démarrage
-    await cleanup_temp_channels()
+    # Créer automatiquement les salons de création pour chaque serveur
+    await setup_creation_channels()
 
-# ==================== DASHBOARD VOCAL INTERACTIF ====================
+async def setup_creation_channels():
+    """Créer automatiquement les salons de création pour tous les serveurs"""
+    for guild in bot.guilds:
+        # Vérifier si le salon existe déjà
+        existing_channel = discord.utils.get(guild.voice_channels, name="🔊・Créer un salon")
+        
+        if not existing_channel:
+            try:
+                # Créer le salon de création
+                creation_channel = await guild.create_voice_channel(
+                    name="🔊・Créer un salon",
+                    reason="Salon de création automatique pour vocaux personnalisés"
+                )
+                creation_channels[guild.id] = creation_channel.id
+                print(f"✅ Salon de création créé pour {guild.name}")
+            except discord.Forbidden:
+                print(f"❌ Pas de permissions pour créer le salon dans {guild.name}")
+        else:
+            creation_channels[guild.id] = existing_channel.id
+            print(f"✅ Salon de création existant trouvé pour {guild.name}")
 
-class VoiceDashboardView(discord.ui.View):
+@bot.event
+async def on_guild_join(guild):
+    """Créer le salon de création quand le bot rejoint un nouveau serveur"""
+    try:
+        creation_channel = await guild.create_voice_channel(
+            name="🔊・Créer un salon",
+            reason="Salon de création automatique pour vocaux personnalisés"
+        )
+        creation_channels[guild.id] = creation_channel.id
+        print(f"✅ Salon de création créé pour le nouveau serveur {guild.name}")
+    except discord.Forbidden:
+        print(f"❌ Pas de permissions pour créer le salon dans {guild.name}")
+
+# ==================== SYSTÈME VOCAL SIMPLIFIÉ ====================
+
+class SimpleVoiceView(discord.ui.View):
     def __init__(self, voice_channel_id, owner_id):
         super().__init__(timeout=None)
         self.voice_channel_id = voice_channel_id
@@ -97,7 +130,6 @@ class VoiceDashboardView(discord.ui.View):
             current_perms = voice_channel.overwrites_for(everyone_role)
             
             if current_perms.connect is False:
-                # Salon verrouillé, on déverrouille
                 await voice_channel.set_permissions(everyone_role, connect=None)
                 button.label = "Verrouiller"
                 button.emoji = "🔒"
@@ -105,16 +137,12 @@ class VoiceDashboardView(discord.ui.View):
                 status = "🔓 Salon déverrouillé"
                 color = CONFIG['success_color']
             else:
-                # Salon déverrouillé, on verrouille
                 await voice_channel.set_permissions(everyone_role, connect=False)
                 button.label = "Déverrouiller"
                 button.emoji = "🔓"
                 button.style = discord.ButtonStyle.success
                 status = "🔒 Salon verrouillé"
                 color = CONFIG['voice_color']
-            
-            # Mettre à jour le message du dashboard
-            await self.update_dashboard(interaction, voice_channel)
             
             embed = discord.Embed(description=status, color=color)
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -133,7 +161,6 @@ class VoiceDashboardView(discord.ui.View):
             await interaction.response.send_message('❌ Aucun utilisateur à expulser.', ephemeral=True)
             return
 
-        # Créer un menu de sélection avec les membres du salon
         options = []
         for member in voice_channel.members:
             if member.id != self.owner_id and not member.bot:
@@ -153,44 +180,6 @@ class VoiceDashboardView(discord.ui.View):
         view.add_item(select)
         
         await interaction.response.send_message('Sélectionnez l\'utilisateur à expulser:', view=view, ephemeral=True)
-
-    @discord.ui.button(label='Actualiser', emoji='🔄', style=discord.ButtonStyle.primary)
-    async def refresh_dashboard(self, interaction: discord.Interaction, button: discord.ui.Button):
-        voice_channel = bot.get_channel(self.voice_channel_id)
-        if not voice_channel:
-            await interaction.response.send_message('❌ Salon vocal introuvable.', ephemeral=True)
-            return
-
-        await self.update_dashboard(interaction, voice_channel)
-        await interaction.response.send_message('✅ Dashboard actualisé!', ephemeral=True)
-
-    async def update_dashboard(self, interaction, voice_channel):
-        """Mettre à jour le message du dashboard"""
-        try:
-            # Vérifier le statut de verrouillage
-            everyone_role = interaction.guild.default_role
-            current_perms = voice_channel.overwrites_for(everyone_role)
-            is_locked = current_perms.connect is False
-            
-            # Mettre à jour le bouton de verrouillage
-            for item in self.children:
-                if item.emoji and item.emoji.name in ['🔒', '🔓']:
-                    if is_locked:
-                        item.label = "Déverrouiller"
-                        item.emoji = "🔓"
-                        item.style = discord.ButtonStyle.success
-                    else:
-                        item.label = "Verrouiller"
-                        item.emoji = "🔒"
-                        item.style = discord.ButtonStyle.danger
-                    break
-
-            # Créer l'embed mis à jour
-            embed = create_dashboard_embed(voice_channel, self.owner_id)
-            
-            await interaction.edit_original_response(embed=embed, view=self)
-        except:
-            pass
 
 class KickUserSelect(discord.ui.Select):
     def __init__(self, options, voice_channel_id):
@@ -243,6 +232,642 @@ class RenameModal(discord.ui.Modal):
         try:
             old_name = voice_channel.name
             await voice_channel.edit(name=new_name)
+            
+            embed = discord.Embed(
+                title='✅ Salon renommé',
+                description=f'**Ancien nom:** {old_name}\n**Nouveau nom:** {new_name}',
+                color=CONFIG['success_color']
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except discord.Forbidden:
+            await interaction.response.send_message('❌ Permissions insuffisantes pour renommer ce salon.', ephemeral=True)
+
+class LimitModal(discord.ui.Modal):
+    def __init__(self, voice_channel_id):
+        super().__init__(title="Définir la limite d'utilisateurs")
+        self.voice_channel_id = voice_channel_id
+        
+        self.limit_input = discord.ui.TextInput(
+            label="Limite d'utilisateurs",
+            placeholder="Entrez un nombre (0 = illimité)...",
+            max_length=2,
+            required=True
+        )
+        self.add_item(self.limit_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        voice_channel = bot.get_channel(self.voice_channel_id)
+        if not voice_channel:
+            await interaction.response.send_message('❌ Salon vocal introuvable.', ephemeral=True)
+            return
+
+        try:
+            limit = int(self.limit_input.value.strip())
+            if limit < 0 or limit > 99:
+                await interaction.response.send_message('❌ La limite doit être entre 0 et 99 (0 = illimité).', ephemeral=True)
+                return
+        except ValueError:
+            await interaction.response.send_message('❌ Veuillez entrer un nombre valide.', ephemeral=True)
+            return
+
+        try:
+            await voice_channel.edit(user_limit=limit)
+            
+            limit_text = str(limit) if limit > 0 else "Illimitée"
+            embed = discord.Embed(
+                title='✅ Limite modifiée',
+                description=f'**Salon:** {voice_channel.name}\n**Nouvelle limite:** {limit_text}',
+                color=CONFIG['success_color']
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except discord.Forbidden:
+            await interaction.response.send_message('❌ Permissions insuffisantes pour modifier ce salon.', ephemeral=True)
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Gérer les changements d'état vocal"""
+    
+    # Utilisateur rejoint un salon de création
+    if after.channel and after.channel.id in creation_channels.values():
+        await create_temp_voice_channel(member)
+    
+    # Vérifier si un salon temporaire devient vide
+    if before.channel and before.channel.id in temp_channels:
+        await check_temp_channel_empty(before.channel)
+
+async def create_temp_voice_channel(member):
+    """Créer un salon vocal temporaire pour un utilisateur"""
+    
+    try:
+        guild = member.guild
+        
+        # Nom du salon avec emoji
+        voice_name = f"🔊・{member.display_name}"
+        
+        # Créer le salon vocal temporaire
+        temp_voice = await guild.create_voice_channel(
+            name=voice_name,
+            reason=f"Salon vocal temporaire créé pour {member}"
+        )
+        
+        # Donner les permissions au propriétaire
+        await temp_voice.set_permissions(member, manage_channels=True, manage_permissions=True)
+        
+        # Déplacer l'utilisateur vers le nouveau salon vocal
+        await member.move_to(temp_voice)
+        
+        # Enregistrer le salon temporaire
+        temp_channels[temp_voice.id] = {
+            'voice_channel_id': temp_voice.id,
+            'owner_id': member.id,
+            'guild_id': guild.id,
+            'created_at': datetime.datetime.utcnow()
+        }
+        
+        # Envoyer un message privé avec les boutons de contrôle
+        embed = discord.Embed(
+            title='🎉 Votre salon vocal créé!',
+            description=f'**Salon:** {temp_voice.mention}\n**Propriétaire:** {member.mention}',
+            color=CONFIG['voice_color']
+        )
+        embed.add_field(
+            name='🎛️ Contrôles',
+            value='Utilisez les boutons ci-dessous pour gérer votre salon:',
+            inline=False
+        )
+        embed.set_footer(text='Le salon se supprime automatiquement quand il est vide.')
+        
+        view = SimpleVoiceView(temp_voice.id, member.id)
+        
+        try:
+            await member.send(embed=embed, view=view)
+        except discord.Forbidden:
+            # Si on ne peut pas envoyer de MP, envoyer dans le serveur
+            general_channel = discord.utils.get(guild.text_channels, name="general") or guild.text_channels[0]
+            if general_channel:
+                embed.description = f'**Salon:** {temp_voice.mention}\n**Propriétaire:** {member.mention}\n\n*Message envoyé ici car vos MP sont fermés*'
+                message = await general_channel.send(f'{member.mention}', embed=embed, view=view)
+                # Supprimer le message après 30 secondes pour éviter le spam
+                await asyncio.sleep(30)
+                try:
+                    await message.delete()
+                except:
+                    pass
+            
+    except discord.Forbidden:
+        print(f"❌ Permissions insuffisantes pour créer un salon vocal pour {member}")
+    except Exception as e:
+        print(f"❌ Erreur lors de la création du salon vocal: {e}")
+
+async def check_temp_channel_empty(voice_channel):
+    """Vérifier si un salon temporaire est vide et le supprimer si c'est le cas"""
+    
+    if voice_channel.id not in temp_channels:
+        return
+    
+    # Attendre un peu pour éviter les suppressions accidentelles
+    await asyncio.sleep(3)
+    
+    try:
+        voice_channel = bot.get_channel(voice_channel.id)
+        if voice_channel and len(voice_channel.members) == 0:
+            await voice_channel.delete(reason="Salon vocal temporaire vide")
+            del temp_channels[voice_channel.id]
+                
+    except discord.NotFound:
+        if voice_channel.id in temp_channels:
+            del temp_channels[voice_channel.id]
+    except Exception as e:
+        print(f"❌ Erreur lors de la suppression du salon temporaire: {e}")
+
+@bot.command(name='vinfo')
+async def voice_info(ctx):
+    """Afficher les informations sur les salons vocaux"""
+    
+    if ctx.guild.id not in creation_channels:
+        await ctx.reply('❌ Erreur: salon de création introuvable. Le bot va essayer de le recréer...')
+        await setup_creation_channels()
+        return
+
+    # Compter les salons temporaires actifs
+    active_temp_channels = [data for voice_id, data in temp_channels.items() 
+                           if data['guild_id'] == ctx.guild.id]
+
+    create_channel = bot.get_channel(creation_channels[ctx.guild.id])
+    
+    embed = discord.Embed(
+        title='📊 Système Vocal Simplifié',
+        color=CONFIG['voice_color']
+    )
+    
+    embed.add_field(
+        name='⚙️ Configuration',
+        value=f'**Salon de création:** {create_channel.mention if create_channel else "❌ Introuvable"}\n**Salons actifs:** {len(active_temp_channels)}',
+        inline=False
+    )
+    
+    if active_temp_channels:
+        channels_info = []
+        for data in active_temp_channels[:5]:  # Limiter à 5
+            voice_channel = bot.get_channel(data['voice_channel_id'])
+            if voice_channel:
+                owner = bot.get_user(data['owner_id'])
+                channels_info.append(f'🔊 **{voice_channel.name}** - {owner.mention if owner else "Propriétaire introuvable"} ({len(voice_channel.members)} membres)')
+        
+        embed.add_field(
+            name='🎛️ Salons Actifs',
+            value='\n'.join(channels_info) + (f'\n... et {len(active_temp_channels) - 5} autres' if len(active_temp_channels) > 5 else ''),
+            inline=False
+        )
+    
+    embed.add_field(
+        name='✨ Comment ça marche?',
+        value='1️⃣ Rejoignez le salon **🔊・Créer un salon**\n2️⃣ Un salon vocal personnalisé est créé automatiquement\n3️⃣ Vous recevez un message privé avec les boutons de contrôle\n4️⃣ Gérez votre salon via les boutons (renommer, limite, verrouiller, expulser)\n5️⃣ Le salon se supprime automatiquement quand il est vide',
+        inline=False
+    )
+
+# ==================== SYSTÈME GIVEAWAY (code existant) ====================
+
+class GiveawayView(discord.ui.View):
+    def __init__(self, giveaway_id):
+        super().__init__(timeout=None)
+        self.giveaway_id = giveaway_id
+
+    @discord.ui.button(label='Participer 🎉', style=discord.ButtonStyle.primary, custom_id='join_giveaway')
+    async def join_giveaway(self, interaction: discord.Interaction, button: discord.ui.Button):
+        giveaway = active_giveaways.get(self.giveaway_id)
+        
+        if not giveaway or giveaway.get('ended', False):
+            await interaction.response.send_message('❌ Ce giveaway n\'est plus actif.', ephemeral=True)
+            return
+
+        user_id = interaction.user.id
+        
+        if user_id in giveaway['participants']:
+            giveaway['participants'].remove(user_id)
+            await interaction.response.send_message('❌ Vous avez quitté le giveaway!', ephemeral=True)
+        else:
+            giveaway['participants'].add(user_id)
+            await interaction.response.send_message('✅ Vous participez maintenant au giveaway! Bonne chance!', ephemeral=True)
+        
+        # Mise à jour de l'embed avec le nouveau nombre de participants
+        await self.update_giveaway_embed(interaction)
+    
+    async def update_giveaway_embed(self, interaction):
+        """Met à jour l'embed avec le nombre de participants"""
+        giveaway = active_giveaways.get(self.giveaway_id)
+        if not giveaway:
+            return
+            
+        # Récupération des infos du giveaway
+        end_time = giveaway['end_time']
+        participants_count = len(giveaway['participants'])
+        
+        # Création du nouvel embed
+        embed = discord.Embed(
+            title='🎉 GIVEAWAY 🎉',
+            description=f"**Prix:** {giveaway['prize']}\n**Gagnants:** {giveaway['winners']}\n**Participants:** {participants_count}\n**Fin:** <t:{int(end_time.timestamp())}:R>\n**Organisé par:** <@{giveaway['host_id']}>",
+            color=CONFIG['embed_color'],
+            timestamp=end_time
+        )
+        embed.set_footer(text=f"ID: {self.giveaway_id} • Cliquez sur le bouton pour participer!")
+        
+        try:
+            await interaction.edit_original_response(embed=embed, view=self)
+        except:
+            pass
+
+@bot.command(name='giveaway', aliases=['g'])
+async def create_giveaway(ctx, duration: str = None, winners: int = None, *, prize: str = None):
+    """Créer un nouveau giveaway"""
+    
+    if not ctx.author.guild_permissions.manage_messages and not any(role.name == CONFIG['admin_role'] for role in ctx.author.roles):
+        await ctx.reply('❌ Vous n\'avez pas la permission d\'utiliser cette commande.')
+        return
+
+    if not all([duration, winners, prize]):
+        embed = discord.Embed(
+            title="❌ Usage incorrect",
+            description="Usage: `!giveaway <durée> <nombre_gagnants> <prix>`\nExemple: `!giveaway 1h 1 Nitro Discord`",
+            color=CONFIG['error_color']
+        )
+        await ctx.reply(embed=embed)
+        return
+
+    duration_seconds = parse_duration(duration)
+    if not duration_seconds:
+        await ctx.reply('❌ Durée invalide. Utilisez: s (secondes), m (minutes), h (heures), d (jours)')
+        return
+
+    if winners < 1:
+        await ctx.reply('❌ Le nombre de gagnants doit être un nombre positif.')
+        return
+
+    end_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=duration_seconds)
+    giveaway_id = str(int(datetime.datetime.now().timestamp()))
+
+    embed = discord.Embed(
+        title='🎉 GIVEAWAY 🎉',
+        description=f"**Prix:** {prize}\n**Gagnants:** {winners}\n**Participants:** 0\n**Fin:** <t:{int(end_time.timestamp())}:R>\n**Organisé par:** {ctx.author.mention}",
+        color=CONFIG['embed_color'],
+        timestamp=end_time
+    )
+    embed.set_footer(text=f"ID: {giveaway_id} • Cliquez sur le bouton pour participer!")
+
+    view = GiveawayView(giveaway_id)
+    giveaway_message = await ctx.send(embed=embed, view=view)
+
+    active_giveaways[giveaway_id] = {
+        'message_id': giveaway_message.id,
+        'channel_id': ctx.channel.id,
+        'guild_id': ctx.guild.id,
+        'prize': prize,
+        'winners': winners,
+        'end_time': end_time,
+        'host_id': ctx.author.id,
+        'participants': set(),
+        'ended': False
+    }
+
+    asyncio.create_task(schedule_giveaway_end(giveaway_id, duration_seconds))
+    
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+
+@bot.command(name='gend', aliases=['gfinish'])
+async def end_giveaway_command(ctx, message_id: int = None):
+    """Terminer un giveaway manuellement"""
+    
+    if not ctx.author.guild_permissions.manage_messages and not any(role.name == CONFIG['admin_role'] for role in ctx.author.roles):
+        await ctx.reply('❌ Vous n\'avez pas la permission d\'utiliser cette commande.')
+        return
+
+    if not message_id:
+        await ctx.reply('❌ Usage: `!gend <message_id>`')
+        return
+
+    giveaway_id = None
+    for gid, giveaway in active_giveaways.items():
+        if giveaway['message_id'] == message_id:
+            giveaway_id = gid
+            break
+
+    if not giveaway_id:
+        await ctx.reply('❌ Giveaway non trouvé ou déjà terminé.')
+        return
+
+    await finish_giveaway(giveaway_id)
+    await ctx.reply('✅ Giveaway terminé manuellement!')
+
+@bot.command(name='greroll')
+async def reroll_giveaway(ctx, message_id: int = None):
+    """Refaire le tirage d'un giveaway terminé"""
+    
+    if not ctx.author.guild_permissions.manage_messages and not any(role.name == CONFIG['admin_role'] for role in ctx.author.roles):
+        await ctx.reply('❌ Vous n\'avez pas la permission d\'utiliser cette commande.')
+        return
+
+    if not message_id:
+        await ctx.reply('❌ Usage: `!greroll <message_id>`')
+        return
+
+    try:
+        message = await ctx.channel.fetch_message(message_id)
+        
+        if not message.embeds or 'GIVEAWAY TERMINÉ' not in message.embeds[0].title:
+            await ctx.reply('❌ Ce message n\'est pas un giveaway terminé.')
+            return
+
+        reaction = None
+        for r in message.reactions:
+            if str(r.emoji) == '🎉':
+                reaction = r
+                break
+
+        if not reaction:
+            await ctx.reply('❌ Aucune réaction trouvée sur ce giveaway.')
+            return
+
+        participants = []
+        async for user in reaction.users():
+            if not user.bot:
+                participants.append(user)
+
+        if not participants:
+            await ctx.reply('❌ Aucun participant trouvé.')
+            return
+
+        winner = random.choice(participants)
+        
+        embed_desc = message.embeds[0].description
+        if '**Prix:**' in embed_desc:
+            prize = embed_desc.split('**Prix:** ')[1].split('\n')[0]
+        else:
+            prize = "Prix inconnu"
+
+        await ctx.send(f'🎊 Nouveau tirage! Le gagnant est {winner.mention} pour: **{prize}**!')
+
+    except discord.NotFound:
+        await ctx.reply('❌ Message non trouvé.')
+    except Exception as e:
+        await ctx.reply('❌ Erreur lors du nouveau tirage.')
+
+@bot.command(name='glist')
+async def list_giveaways(ctx):
+    """Lister tous les giveaways actifs"""
+    
+    guild_giveaways = [g for g in active_giveaways.values() 
+                      if not g.get('ended', False) and g['guild_id'] == ctx.guild.id]
+
+    if not guild_giveaways:
+        await ctx.reply('📝 Aucun giveaway actif dans ce serveur.')
+        return
+
+    embed = discord.Embed(
+        title='📝 Giveaways Actifs',
+        color=CONFIG['embed_color'],
+        timestamp=datetime.datetime.utcnow()
+    )
+
+    for i, giveaway in enumerate(guild_giveaways, 1):
+        embed.add_field(
+            name=f"{i}. {giveaway['prize']}",
+            value=f"**Canal:** <#{giveaway['channel_id']}>\n**Fin:** <t:{int(giveaway['end_time'].timestamp())}:R>\n**Participants:** {len(giveaway['participants'])}",
+            inline=True
+        )
+
+    await ctx.reply(embed=embed)
+
+@bot.command(name='help', aliases=['aide'])
+async def bot_help(ctx):
+    """Afficher l'aide complète du bot"""
+    
+    embed = discord.Embed(
+        title='🎮 Bot Vocal Simplifié + Giveaway',
+        description='Bot avec création automatique de salons vocaux personnalisés et système de giveaway.',
+        color=CONFIG['embed_color']
+    )
+    
+    embed.add_field(
+        name='🎉 Commandes Giveaway',
+        value='`!giveaway <durée> <gagnants> <prix>` - Créer un giveaway\n`!gend <message_id>` - Terminer manuellement\n`!greroll <message_id>` - Nouveau tirage\n`!glist` - Liste des giveaways actifs',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🔊 Système Vocal Automatique',
+        value='**Pas de configuration nécessaire!**\nRejoignez le salon **🔊・Créer un salon** pour obtenir votre salon vocal personnel avec contrôles via message privé.',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🎛️ Contrôles Vocaux (Boutons)',
+        value='• **Renommer** - Changez le nom de votre salon\n• **Limite** - Définissez un max d\'utilisateurs\n• **Verrouiller** - Bloquez l\'accès\n• **Expulser** - Éjectez des utilisateurs',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='⚙️ Commandes Générales',
+        value='`!help` - Afficher cette aide\n`!ping` - Latence du bot\n`!vinfo` - Infos sur les vocaux',
+        inline=False
+    )
+    
+    embed.add_field(
+        name='⏰ Formats de Durée (Giveaways)',
+        value='`s` = secondes, `m` = minutes, `h` = heures, `d` = jours\nExemples: `30s`, `5m`, `2h`, `1d`',
+        inline=False
+    )
+    
+    embed.set_footer(text='Bot Vocal Simplifié • Aucune configuration requise!')
+    await ctx.reply(embed=embed)
+
+@bot.command(name='ping')
+async def ping(ctx):
+    """Tester la latence du bot"""
+    
+    embed = discord.Embed(
+        title='🏓 Pong!',
+        description=f'**Latence:** {round(bot.latency * 1000)}ms',
+        color=CONFIG['success_color']
+    )
+    await ctx.reply(embed=embed)
+
+async def schedule_giveaway_end(giveaway_id, delay):
+    """Programmer la fin automatique d'un giveaway"""
+    await asyncio.sleep(delay)
+    await finish_giveaway(giveaway_id)
+
+async def finish_giveaway(giveaway_id):
+    """Terminer un giveaway et sélectionner les gagnants"""
+    giveaway = active_giveaways.get(giveaway_id)
+    if not giveaway or giveaway.get('ended', False):
+        return
+
+    giveaway['ended'] = True
+
+    try:
+        channel = bot.get_channel(giveaway['channel_id'])
+        message = await channel.fetch_message(giveaway['message_id'])
+
+        participants = list(giveaway['participants'])
+        
+        if not participants:
+            embed = discord.Embed(
+                title='🎉 GIVEAWAY TERMINÉ 🎉',
+                description=f"**Prix:** {giveaway['prize']}\n**Gagnants:** Aucun participant",
+                color=CONFIG['error_color']
+            )
+            embed.set_footer(text=f"ID: {giveaway_id} • Giveaway terminé")
+            
+            await message.edit(embed=embed, view=None)
+            return
+
+        num_winners = min(giveaway['winners'], len(participants))
+        winners = random.sample(participants, num_winners)
+        
+        winner_mentions = [f'<@{winner_id}>' for winner_id in winners]
+        winner_text = ', '.join(winner_mentions)
+
+        embed = discord.Embed(
+            title='🎉 GIVEAWAY TERMINÉ 🎉',
+            description=f"**Prix:** {giveaway['prize']}\n**Gagnant(s):** {winner_text}\n**Participants:** {len(participants)}",
+            color=CONFIG['success_color']
+        )
+        embed.set_footer(text=f"ID: {giveaway_id} • Giveaway terminé")
+
+        await message.edit(embed=embed, view=None)
+        await channel.send(f'🎊 Félicitations {winner_text}! Vous avez gagné: **{giveaway["prize"]}**!')
+
+    except Exception as e:
+        print(f'Erreur lors de la fin du giveaway: {e}')
+
+    if giveaway_id in active_giveaways:
+        del active_giveaways[giveaway_id]
+
+def parse_duration(duration_str):
+    """Parser une durée en secondes"""
+    pattern = r'^(\d+)([smhd])$'
+    match = re.match(pattern, duration_str.lower())
+    
+    if not match:
+        return None
+    
+    value = int(match.group(1))
+    unit = match.group(2)
+    
+    multipliers = {
+        's': 1,
+        'm': 60,
+        'h': 3600,
+        'd': 86400
+    }
+    
+    return value * multipliers.get(unit, 0)
+
+@bot.event
+async def on_command_error(ctx, error):
+    """Gestion des erreurs de commandes"""
+    if isinstance(error, commands.CommandNotFound):
+        return
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.reply(f'❌ Argument manquant. Utilisez `!help` pour voir l\'usage.')
+    elif isinstance(error, commands.BadArgument):
+        await ctx.reply(f'❌ Argument invalide. Utilisez `!help` pour voir l\'usage.')
+    else:
+        print(f'Erreur: {error}')
+
+# Récupération du token depuis les variables d'environnement
+TOKEN = os.getenv('DISCORD_TOKEN')
+
+if not TOKEN:
+    print('❌ Erreur: Variable DISCORD_TOKEN non définie!')
+    print('Sur Koyeb, ajoutez la variable d\'environnement:')
+    print('DISCORD_TOKEN = votre_token_discord')
+    exit(1)
+
+# Démarrage du bot
+if __name__ == '__main__':
+    bot.run(TOKEN)
+
+"""
+📁 FICHIERS REQUIS POUR KOYEB:
+
+1. main.py (ce fichier)
+2. requirements.txt (voir ci-dessous)
+
+📋 requirements.txt:
+discord.py>=2.3.0,<2.4.0
+
+🚀 SYSTÈME VOCAL SIMPLIFIÉ:
+
+✨ FONCTIONNEMENT AUTOMATIQUE:
+1. ✅ Le bot crée automatiquement "🔊・Créer un salon" dans chaque serveur
+2. ✅ Utilisateur rejoint ce salon
+3. ✅ Salon vocal personnel "🔊・PseudoUser" créé automatiquement  
+4. ✅ Utilisateur déplacé dans son salon
+5. ✅ Message privé envoyé avec boutons de contrôle
+6. ✅ Gestion complète via boutons (renommer, limite, verrouiller, expulser)
+7. ✅ Suppression automatique quand vide
+
+🎛️ CONTRÔLES DISPONIBLES (via MP):
+- ✏️ **Renommer** - Modal pour changer le nom
+- 👥 **Limite** - Modal pour définir max utilisateurs
+- 🔒 **Verrouiller/Déverrouiller** - Toggle accès
+- 👢 **Expulser** - Menu déroulant pour choisir qui virer
+
+🎯 AVANTAGES DE LA VERSION SIMPLIFIÉE:
+✅ **Aucune configuration admin** - Fonctionne directement
+✅ **Pas de salons textuels privés** - Plus simple à gérer
+✅ **Contrôles via MP** - Interface propre
+✅ **Création automatique** - Le bot gère tout
+✅ **Support multi-serveurs** - Fonctionne partout
+✅ **Nettoyage automatique** - Pas de salons orphelins
+
+🎮 COMMANDES DISPONIBLES:
+
+📊 GIVEAWAYS:
+- !giveaway 1h 1 Nitro Discord - Créer un giveaway
+- !gend <message_id> - Terminer manuellement
+- !greroll <message_id> - Nouveau tirage  
+- !glist - Liste des giveaways actifs
+
+🔊 VOCAL (Automatique):
+- !vinfo - Informations sur le système vocal
+- Rejoignez "🔊・Créer un salon" pour votre vocal perso!
+
+⚙️ GÉNÉRALES:
+- !help - Aide complète
+- !ping - Latence du bot
+
+🛠️ FONCTIONNALITÉS TECHNIQUES:
+✅ Création automatique du salon de création au démarrage
+✅ Gestion multi-serveurs avec stockage par guild_id  
+✅ Permissions automatiques pour le propriétaire
+✅ Messages de fallback si les MP sont fermés
+✅ Nettoyage automatique des salons vides
+✅ Interface moderne avec modals et boutons
+✅ Gestion d'erreurs complète
+
+🔧 PERMISSIONS DISCORD REQUISES:
+- Send Messages
+- Manage Messages  
+- Add Reactions
+- Read Message History
+- Manage Channels (pour créer/supprimer les vocaux)
+- Move Members (pour déplacer les utilisateurs)
+- Connect & Speak (pour les vocaux)
+
+💡 UTILISATION SIMPLE:
+1. Invitez le bot sur votre serveur
+2. Le salon "🔊・Créer un salon" apparaît automatiquement
+3. Les utilisateurs rejoignent ce salon
+4. Ils obtiennent leur salon personnel avec contrôles
+5. Aucune configuration supplémentaire nécessaire!
+"""name=new_name)
             
             embed = discord.Embed(
                 title='✅ Salon renommé',
