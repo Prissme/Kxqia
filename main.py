@@ -1217,3 +1217,6 @@ if not TOKEN:
 if __name__ == '__main__':
     print('🚀 Démarrage du Bot Premium Giveaway & Vocal...')
     bot.run(TOKEN)Nettoyage automatique")
+                except:
+                    pass
+                channels_to_remove.append(channel_id)
