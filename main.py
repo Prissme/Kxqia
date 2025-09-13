@@ -788,7 +788,18 @@ async def cleanup_empty_channels():
         try:
             voice_channel = bot.get_channel(channel_id)
             
+            # Supprimer les salons vides
             if not voice_channel or len(voice_channel.members) == 0:
+                try:
+                    if voice_channel:
+                        await voice_channel.delete(reason="Nettoyage automatique")
+                except:
+                    pass
+                channels_to_remove.append(channel_id)
+                    
+            # Supprimer les salons trop anciens (12h)
+            age = datetime.datetime.utcnow() - data['created_at']
+            if age.total_seconds() > 43200:
                 try:
                     if voice_channel:
                         await voice_channel.delete(reason="Salon trop ancien")
@@ -1137,17 +1148,8 @@ async def finish_giveaway(giveaway_id):
 
 def parse_duration(duration_str):
     """Parser une durée en secondes"""
-    pattern = r'^(\d+)([smhdw])Nettoyage automatique")
-                except:
-                    pass
-                channels_to_remove.append(channel_id)
-                    
-            # Supprimer les salons trop anciens (12h)
-            age = datetime.datetime.utcnow() - data['created_at']
-            if age.total_seconds() > 43200:
-                try:
-                    if voice_channel:
-                        await voice_channel.delete(reason="
+    pattern = r'^(\d+)([smhdw])
+                
     match = re.match(pattern, duration_str.lower())
     
     if not match:
@@ -1216,7 +1218,4 @@ if not TOKEN:
 
 if __name__ == '__main__':
     print('🚀 Démarrage du Bot Premium Giveaway & Vocal...')
-    bot.run(TOKEN)Nettoyage automatique")
-                except:
-                    pass
-                channels_to_remove.append(channel_id)
+    bot.run(TOKEN)
