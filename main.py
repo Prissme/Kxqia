@@ -807,7 +807,6 @@ async def cleanup_empty_channels():
                     pass
                 channels_to_remove.append(channel_id)
                     
-        except Exception as e:
             print(f"❌ Erreur nettoyage {channel_id}: {e}")
             channels_to_remove.append(channel_id)
     
@@ -1149,7 +1148,7 @@ async def finish_giveaway(giveaway_id):
 def parse_duration(duration_str):
     """Parser une durée en secondes"""
     pattern = r'^(\d+)([smhdw])
-                
+            
     match = re.match(pattern, duration_str.lower())
     
     if not match:
