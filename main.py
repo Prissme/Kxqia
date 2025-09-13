@@ -1217,4 +1217,4 @@ if not TOKEN:
 
 if __name__ == '__main__':
     print('🚀 Démarrage du Bot Premium Giveaway & Vocal...')
-    bot.run(TOKEN)
+    bot.run(TOKEN) 
