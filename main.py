@@ -1,10 +1,12 @@
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 import asyncio
 import random
 import datetime
 import re
 import os
+from typing import Optional
 
 # Configuration
 intents = discord.Intents.default()
@@ -13,6 +15,7 @@ intents.guilds = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
+tree_synced = False
 
 # Variables globales
 active_giveaways = {}
@@ -21,8 +24,15 @@ voice_config = {}
 
 @bot.event
 async def on_ready():
+    global tree_synced
     print(f'{bot.user} est connecté!')
-    cleanup_channels.start()
+
+    if not cleanup_channels.is_running():
+        cleanup_channels.start()
+
+    if not tree_synced:
+        await bot.tree.sync()
+        tree_synced = True
 
 # GIVEAWAY SYSTEM
 class GiveawayView(discord.ui.View):
@@ -223,7 +233,7 @@ async def setup_voice(ctx):
 async def help_command(ctx):
     embed = discord.Embed(
         title='Commandes du Bot',
-        description='**Giveaways:**\n`!giveaway <durée> <gagnants> <prix>`\n\n**Vocal:**\n`!vsetup` - Configuration\nRejoindre "➕ Créer un salon"',
+        description='**Giveaways:**\n`!giveaway <durée> <gagnants> <prix>`\n\n**Vocal:**\n`!vsetup` - Configuration\nRejoindre "➕ Créer un salon"\n\n**Modération:**\n`/purge` - Nettoyer et verrouiller un salon',
         color=0x5865F2
     )
     await ctx.send(embed=embed)
@@ -252,6 +262,56 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     print(f'Error: {error}')
+
+
+# MODERATION COMMANDS
+@bot.tree.command(name='purge', description='Nettoie les messages et verrouille le salon pour les membres')
+@app_commands.describe(
+    amount='Nombre de messages à supprimer (1-1000)',
+    reason='Raison affichée dans le journal'
+)
+async def purge(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 1000] = 100, reason: Optional[str] = None):
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.response.send_message('Permissions insuffisantes pour utiliser cette commande.', ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    channel = interaction.channel
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.followup.send('Cette commande ne peut être utilisée que dans un salon textuel.', ephemeral=True)
+        return
+
+    log_reason = reason or f'Purge demandée par {interaction.user} '
+    deleted = await channel.purge(limit=amount, reason=log_reason)
+
+    overwrite = channel.overwrites_for(interaction.guild.default_role)
+    if overwrite is None:
+        overwrite = discord.PermissionOverwrite()
+    overwrite.send_messages = False
+    overwrite.add_reactions = False
+
+    await channel.set_permissions(
+        interaction.guild.default_role,
+        overwrite=overwrite,
+        reason='Salon verrouillé après purge'
+    )
+
+    info_embed = discord.Embed(
+        title='🔒 Salon verrouillé',
+        description=(
+            "Ce salon vient d'être purgé et est désormais verrouillé pour les membres.\n"
+            "Seuls les administrateurs peuvent y écrire."
+        ),
+        color=0xffa500
+    )
+    info_embed.add_field(name='Messages supprimés', value=str(len(deleted)), inline=True)
+    if reason:
+        info_embed.add_field(name='Raison', value=reason, inline=False)
+    info_embed.set_footer(text=f'Action effectuée par {interaction.user.display_name}')
+
+    await channel.send(embed=info_embed)
+    await interaction.followup.send(f'Purge terminée : {len(deleted)} messages supprimés.', ephemeral=True)
 
 # START BOT
 if __name__ == '__main__':
