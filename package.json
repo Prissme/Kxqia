@@ -1,0 +1,16 @@
+{
+  "name": "secure-discord-bot-dashboard",
+  "version": "1.0.0",
+  "description": "Discord bot with anti-raid/anti-nuke protections and Express dashboard",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0"
+  }
+}
