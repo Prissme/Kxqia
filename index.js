@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { createClient } from "./src/bot/client.js";
 import { startDashboard } from "./src/dashboard/server.js";
+import { startApiServer } from "./src/api/server.js";
 import { getConfig } from "./src/db/database.js";
 import { fileURLToPath } from "url";
 
@@ -31,5 +32,6 @@ for (const file of fs.readdirSync(eventPath)) {
 }
 
 startDashboard(client);
+startApiServer(client);
 
 client.login(process.env.DISCORD_TOKEN);

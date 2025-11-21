@@ -20,8 +20,13 @@ GUILD_ID=ServeurDeTest
 DASHBOARD_PORT=3000
 ADMIN_PASSWORD=motdepassefort
 SESSION_SECRET=sessionSecret
+PORT=8080
+JWT_SECRET=change_me
+FRONTEND_URL=http://localhost:5173
 ```
 Optionnel : remplissez `config/defaultConfig.js` ou passez par le dashboard.
+
+L'API expose également `GET /health` pour les health checks (Koyeb/Kubernetes) et des routes REST modernes sous `/api/*` (auth, config, stats, whitelist, logs, guilds) protégées par JWT + rate-limit.
 
 ## Démarrage
 ```bash
