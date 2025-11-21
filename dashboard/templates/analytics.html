@@ -1,33 +1,53 @@
 {% extends 'base.html' %}
 {% block content %}
+<div class="frosted card border-glow mb-4">
+    <div class="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+            <p class="text-sm uppercase tracking-[0.2rem] text-muted">Analytics</p>
+            <h1 class="text-2xl font-extrabold">Vue complète de votre communauté</h1>
+            <p class="text-muted mt-1">Explorez l'activité par période, identifiez les salons en feu et les membres les plus actifs.</p>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="pulse-dot"></span>
+            <p class="text-sm text-muted">Données en direct synchronisées</p>
+        </div>
+    </div>
+</div>
+
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-    <div class="card">
+    <div class="card stat-card">
         <p class="text-muted text-sm">Membres actifs</p>
-        <p class="text-3xl font-bold" id="analytics-active">--</p>
-        <p class="text-sm text-muted">3 derniers mois</p>
+        <p class="text-4xl font-extrabold" id="analytics-active">--</p>
+        <p class="text-xs uppercase tracking-[0.2rem] text-muted" id="analytics-active-range">Période courante</p>
     </div>
-    <div class="card">
+    <div class="card stat-card">
         <p class="text-muted text-sm">Messages totaux</p>
-        <p class="text-3xl font-bold" id="analytics-messages">--</p>
-        <p class="text-sm text-muted">Toutes périodes</p>
+        <p class="text-4xl font-extrabold" id="analytics-messages">--</p>
+        <p class="text-xs uppercase tracking-[0.2rem] text-muted">Toutes sources combinées</p>
     </div>
-    <div class="card">
-        <p class="text-muted text-sm">Moyenne/jour</p>
-        <p class="text-3xl font-bold" id="analytics-average">--</p>
-        <p class="text-sm text-muted">Basée sur période sélectionnée</p>
+    <div class="card stat-card">
+        <p class="text-muted text-sm">Moyenne / jour</p>
+        <p class="text-4xl font-extrabold" id="analytics-average">--</p>
+        <p class="text-xs uppercase tracking-[0.2rem] text-muted">Basée sur la période sélectionnée</p>
     </div>
 </div>
 
 <div class="card mt-6 space-y-4">
     <div class="flex flex-wrap items-center gap-2">
         <span class="badge">Période</span>
-        <button class="btn-secondary" data-range="24h">24h</button>
-        <button class="btn-secondary" data-range="7d">7j</button>
-        <button class="btn-secondary" data-range="30d">30j</button>
-        <button class="btn-secondary" data-range="90d">3 mois</button>
-        <input type="date" class="input" id="range-start">
-        <input type="date" class="input" id="range-end">
+        <button class="btn-chip" data-range="10m">10 min</button>
+        <button class="btn-chip" data-range="1h">1h</button>
+        <button class="btn-chip" data-range="24h">24h</button>
+        <button class="btn-chip" data-range="7d">7j</button>
+        <button class="btn-chip" data-range="30d">30j</button>
+        <button class="btn-chip" data-range="90d">3 mois</button>
+        <div class="flex items-center gap-2 w-full md:w-auto ml-auto">
+            <input type="date" class="input" id="range-start">
+            <input type="date" class="input" id="range-end">
+            <button class="btn-primary" id="range-apply"><i class="fa fa-magic"></i> Appliquer</button>
+        </div>
     </div>
+    <p class="text-muted text-sm">Choisissez un preset rapide ou définissez vos propres dates pour recalculer tous les graphiques.</p>
 </div>
 
 <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-6">
