@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+    <div class="card space-y-4">
+        <h2 class="text-lg font-semibold">Configuration Bot</h2>
+        <label class="block text-sm text-muted">Préfixe</label>
+        <input type="text" class="input" id="config-prefix" placeholder="!">
+        <label class="block text-sm text-muted">Langue</label>
+        <select class="input" id="config-language">
+            <option value="fr">FR</option>
+            <option value="en">EN</option>
+        </select>
+        <label class="block text-sm text-muted">Timezone</label>
+        <input type="text" class="input" id="config-timezone" placeholder="Europe/Brussels">
+        <button class="btn-primary" onclick="saveConfig()">Sauvegarder</button>
+    </div>
+    <div class="card space-y-4">
+        <h2 class="text-lg font-semibold">Configuration Dashboard</h2>
+        <div class="flex items-center justify-between">
+            <span>Theme</span>
+            <button class="btn-secondary" @click="toggleTheme">Light / Dark</button>
+        </div>
+        <div class="flex items-center justify-between">
+            <span>Auto-refresh</span>
+            <label class="switch"><input type="checkbox" id="config-auto-refresh" checked><span class="slider"></span></label>
+        </div>
+        <div class="flex items-center justify-between">
+            <span>Notifications</span>
+            <label class="switch"><input type="checkbox" id="config-notifications" checked><span class="slider"></span></label>
+        </div>
+        <div>
+            <label class="block text-sm text-muted">Items par page</label>
+            <select class="input" id="config-page-size">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-6">
+    <div class="card space-y-4">
+        <h2 class="text-lg font-semibold">Logs & Monitoring</h2>
+        <label class="block text-sm text-muted">Niveau de logs</label>
+        <select class="input" id="config-log-level">
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO">INFO</option>
+            <option value="WARNING">WARNING</option>
+            <option value="ERROR">ERROR</option>
+        </select>
+        <label class="block text-sm text-muted">Rétention (jours)</label>
+        <input type="number" class="input" id="config-retention" value="30">
+        <div class="flex items-center justify-between">
+            <span>Auto-cleanup</span>
+            <label class="switch"><input type="checkbox" id="config-cleanup" checked><span class="slider"></span></label>
+        </div>
+    </div>
+    <div class="card space-y-4">
+        <h2 class="text-lg font-semibold">Backups & Export</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button class="btn-secondary" onclick="exportConfig()">📥 Export Config</button>
+            <button class="btn-secondary" onclick="exportLogs()">📥 Export Logs</button>
+            <button class="btn-secondary" onclick="exportStats()">📥 Export Stats</button>
+            <button class="btn-danger" onclick="resetDashboard()">⚠️ Reset Dashboard</button>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-6">
+    <h2 class="text-lg font-semibold mb-4">Infos système</h2>
+    <dl class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+        <div class="flex justify-between"><dt class="text-muted">Version Bot</dt><dd id="info-bot-version">1.0.0</dd></div>
+        <div class="flex justify-between"><dt class="text-muted">discord.py</dt><dd id="info-discord-version">2.3.2</dd></div>
+        <div class="flex justify-between"><dt class="text-muted">Python</dt><dd id="info-python-version">--</dd></div>
+        <div class="flex justify-between"><dt class="text-muted">Plateforme</dt><dd>Koyeb</dd></div>
+        <div class="flex justify-between"><dt class="text-muted">Uptime</dt><dd id="info-uptime">--</dd></div>
+        <div class="flex justify-between"><dt class="text-muted">Mémoire utilisée</dt><dd id="info-memory">--</dd></div>
+        <div class="flex justify-between"><dt class="text-muted">Database size</dt><dd id="info-db-size">--</dd></div>
+    </dl>
+</div>
+{% endblock %}

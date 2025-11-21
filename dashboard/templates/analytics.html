@@ -1,0 +1,87 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="card">
+        <p class="text-muted text-sm">Membres actifs</p>
+        <p class="text-3xl font-bold" id="analytics-active">--</p>
+        <p class="text-sm text-muted">3 derniers mois</p>
+    </div>
+    <div class="card">
+        <p class="text-muted text-sm">Messages totaux</p>
+        <p class="text-3xl font-bold" id="analytics-messages">--</p>
+        <p class="text-sm text-muted">Toutes périodes</p>
+    </div>
+    <div class="card">
+        <p class="text-muted text-sm">Moyenne/jour</p>
+        <p class="text-3xl font-bold" id="analytics-average">--</p>
+        <p class="text-sm text-muted">Basée sur période sélectionnée</p>
+    </div>
+</div>
+
+<div class="card mt-6 space-y-4">
+    <div class="flex flex-wrap items-center gap-2">
+        <span class="badge">Période</span>
+        <button class="btn-secondary" data-range="24h">24h</button>
+        <button class="btn-secondary" data-range="7d">7j</button>
+        <button class="btn-secondary" data-range="30d">30j</button>
+        <button class="btn-secondary" data-range="90d">3 mois</button>
+        <input type="date" class="input" id="range-start">
+        <input type="date" class="input" id="range-end">
+    </div>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-6">
+    <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Croissance membres</h2>
+            <span class="badge">Joins/Leaves</span>
+        </div>
+        <canvas id="chart-members"></canvas>
+    </div>
+    <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Top 10 membres actifs</h2>
+            <span class="badge">Barre</span>
+        </div>
+        <canvas id="chart-top-members"></canvas>
+    </div>
+    <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Activité par salon</h2>
+            <span class="badge">Top salons</span>
+        </div>
+        <canvas id="chart-room-activity"></canvas>
+    </div>
+    <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Heatmap activité</h2>
+            <span class="badge">Jours/Heures</span>
+        </div>
+        <div id="analytics-heatmap" class="grid grid-cols-6 gap-1 text-center"></div>
+    </div>
+</div>
+
+<div class="card mt-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold">Top contributeurs</h2>
+        <div class="flex gap-2 text-sm">
+            <input type="search" placeholder="Rechercher" class="input" id="search-contrib">
+            <button class="btn-primary" id="export-contrib">Export CSV</button>
+        </div>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="table-auto w-full text-sm">
+            <thead>
+                <tr>
+                    <th class="th">Rang</th>
+                    <th class="th">Membre</th>
+                    <th class="th">Messages</th>
+                    <th class="th">% Total</th>
+                    <th class="th">Tendance</th>
+                </tr>
+            </thead>
+            <tbody id="contributors-table" class="divide-y divide-surface"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

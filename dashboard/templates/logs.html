@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card mb-6">
+    <div class="flex flex-wrap items-center gap-3">
+        <select class="input" id="log-type">
+            <option value="all">Tous</option>
+            <option value="moderation">Modération</option>
+            <option value="analytics">Analytics</option>
+            <option value="system">Système</option>
+            <option value="error">Erreurs</option>
+        </select>
+        <input type="date" class="input" id="log-start">
+        <input type="date" class="input" id="log-end">
+        <input type="search" class="input" id="log-search" placeholder="Recherche">
+        <button class="btn-secondary" id="export-logs">Export CSV</button>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+    <div class="xl:col-span-2 space-y-3" id="logs-container"></div>
+    <div class="card" id="logs-stats">
+        <h2 class="text-lg font-semibold mb-4">Dernières 24h</h2>
+        <ul class="space-y-2 text-sm">
+            <li>Événements: <span id="logs-total">0</span></li>
+            <li>Erreurs: <span id="logs-errors">0</span></li>
+            <li>Warnings: <span id="logs-warnings">0</span></li>
+            <li>Actions modération: <span id="logs-mod">0</span></li>
+            <li>Requêtes analytics: <span id="logs-analytics">0</span></li>
+        </ul>
+    </div>
+</div>
+{% endblock %}
