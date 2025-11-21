@@ -538,7 +538,8 @@ def run_bot():
 
 def run_flask():
     port = int(os.getenv('PORT', 8000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    # allow_unsafe_werkzeug enables the built-in dev server in environments like Koyeb
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
 
 
 if __name__ == '__main__':
