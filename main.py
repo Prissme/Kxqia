@@ -98,6 +98,8 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as exc:  # noqa: BLE001
         logger.exception('Sync des commandes échouée: %s', exc)
+    for guild in bot.guilds:
+        db.record_daily_stats(date_value=datetime.date.today(), guild_id=str(guild.id), members_total=guild.member_count)
     socketio.emit('bot_status', {
         'status': 'online',
         'latency': round(bot.latency * 1000, 2) if bot.latency else None,
@@ -110,8 +112,61 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
     await bot.process_commands(message)
-    db.log_event('system', 'info', 'Message reçu', user_id=str(message.author.id), user_name=str(message.author), channel_id=str(message.channel.id))
-    db.record_daily_stats(date_value=datetime.date.today(), guild_id=str(message.guild.id if message.guild else 'dm'), members_total=message.guild.member_count if message.guild else 0, messages_sent=1, commands_used=0)
+    guild = message.guild
+    if guild is None:
+        return
+    db.log_event(
+        'message',
+        'info',
+        'Message reçu',
+        user_id=str(message.author.id),
+        user_name=str(message.author),
+        channel_id=str(message.channel.id),
+        guild_id=str(guild.id),
+        channel_name=message.channel.name,
+    )
+    db.record_daily_stats(
+        date_value=datetime.date.today(),
+        guild_id=str(guild.id),
+        members_total=guild.member_count,
+        messages_sent=1,
+    )
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    db.log_event(
+        'member',
+        'info',
+        'Nouveau membre',
+        user_id=str(member.id),
+        user_name=str(member),
+        guild_id=str(member.guild.id),
+    )
+    db.record_daily_stats(
+        date_value=datetime.date.today(),
+        guild_id=str(member.guild.id),
+        members_total=member.guild.member_count,
+        members_joined=1,
+    )
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    db.log_event(
+        'member',
+        'info',
+        'Membre parti',
+        user_id=str(member.id),
+        user_name=str(member),
+        guild_id=str(member.guild.id),
+    )
+    db.record_daily_stats(
+        date_value=datetime.date.today(),
+        guild_id=str(member.guild.id),
+        members_total=member.guild.member_count,
+        members_left=1,
+    )
 
 
 @bot.command(name='help')
@@ -138,11 +193,55 @@ async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
 
 
+@bot.command(name='syncstats')
+@commands.has_permissions(administrator=True)
+async def syncstats(ctx: commands.Context):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée dans un serveur.')
+        return
+
+    await ctx.send("Synchronisation des statistiques... Cela peut prendre plusieurs minutes, ne lancez qu'une seule fois.")
+    stats: Counter[datetime.date] = Counter()
+    processed = 0
+    for channel in _iter_message_channels(ctx.guild):
+        permissions = channel.permissions_for(ctx.guild.me)
+        if not (permissions.view_channel and permissions.read_message_history):
+            continue
+        async for message in channel.history(limit=None, oldest_first=True):
+            if message.author.bot:
+                continue
+            stats[message.created_at.date()] += 1
+            processed += 1
+
+    for day, count in stats.items():
+        db.record_daily_stats(
+            date_value=day,
+            guild_id=str(ctx.guild.id),
+            members_total=ctx.guild.member_count,
+            messages_sent=count,
+        )
+
+    db.log_event('analytics', 'info', 'Sync stats terminé', guild_id=str(ctx.guild.id), metadata={'messages_indexed': processed})
+    await ctx.send(f'Synchronisation terminée : {processed} messages comptés sur {len(stats)} jours.')
+
+
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     if isinstance(error, commands.CommandNotFound):
         return
     logger.error('Error: %s', error)
+
+
+@bot.event
+async def on_command_completion(ctx: commands.Context):
+    if ctx.guild is None:
+        return
+    db.record_daily_stats(
+        date_value=datetime.date.today(),
+        guild_id=str(ctx.guild.id),
+        members_total=ctx.guild.member_count,
+        commands_used=1,
+    )
 
 
 @bot.tree.command(name='purge', description='Nettoie les messages et verrouille le salon pour les membres')
@@ -324,14 +423,19 @@ def health():
 @app.route('/api/stats/overview')
 def stats_overview():
     overview = db.get_overview()
+    chart_data = db.get_chart_data(days=7)
+    top_channels = db.get_top_channels(limit=5, days=7)
+    chart_data['channels'] = [
+        {'label': _channel_label(row['channel_id']), 'value': row['message_count']} for row in top_channels
+    ]
+    chart_data.setdefault('events', [])
+    chart_data.setdefault('heatmap', [])
     overview.update({
         'uptime': uptime(),
         'bot_status': 'online' if bot_status.get('ready') else 'offline',
         'latency': round(bot.latency * 1000, 2) if bot_status.get('ready') and bot.latency else None,
         'guilds': len(bot.guilds) if bot_status.get('ready') else 0,
-        'chart_data': _fake_chart_data(),
-        'members_today': 0,
-        'messages_today': 0,
+        'chart_data': chart_data,
         'guild': _guild_metadata(),
     })
     return jsonify(overview)
@@ -341,18 +445,18 @@ def stats_overview():
 def stats_messages_api():
     period = request.args.get('period', '7d')
     min_messages = int(request.args.get('min_messages', 1))
-    payload = [
-        {'user_id': '1', 'username': 'User#1234', 'count': 120, 'percentage': 12.5},
-        {'user_id': '2', 'username': 'User#5678', 'count': 95, 'percentage': 9.3},
-    ]
+    days = _period_to_days(period)
+    payload = [member for member in db.get_top_members(days=days) if member['count'] >= min_messages]
     return jsonify({'period': period, 'min_messages': min_messages, 'results': payload})
 
 
 @app.route('/api/stats/channels')
 def stats_channels_api():
+    days = _period_to_days(request.args.get('period', '7d'))
+    channels = db.get_top_channels(days=days, limit=10)
     payload = [
-        {'channel_id': '1', 'name': 'général', 'message_count': 340},
-        {'channel_id': '2', 'name': 'annonces', 'message_count': 120},
+        {'channel_id': row['channel_id'], 'name': _channel_label(row['channel_id']), 'message_count': row['message_count']}
+        for row in channels
     ]
     return jsonify(payload)
 
@@ -517,13 +621,19 @@ def _guild_channels() -> list[dict[str, str]]:
     return channels
 
 
-def _fake_chart_data() -> dict:
-    return {
-        'messages': [{'label': (datetime.date.today() - datetime.timedelta(days=i)).strftime('%d/%m'), 'value': max(10, 100 - i * 5)} for i in range(6, -1, -1)],
-        'channels': [{'label': '#général', 'value': 320}, {'label': '#annonces', 'value': 120}, {'label': '#random', 'value': 95}, {'label': '#dev', 'value': 80}, {'label': '#support', 'value': 65}],
-        'events': [{'label': 'purge', 'value': 12}, {'label': 'unpurge', 'value': 3}, {'label': 'stats', 'value': 5}],
-        'heatmap': [{'label': f"{h}h", 'value': (h * 7) % 50 + 5} for h in range(0, 24, 3)],
-    }
+def _channel_label(channel_id: str) -> str:
+    if not bot_status.get('ready'):
+        return f"#{channel_id}"
+    try:
+        channel = bot.get_channel(int(channel_id)) if channel_id else None
+    except Exception:  # noqa: BLE001
+        channel = None
+    return f"#{channel.name}" if channel else f"#{channel_id}"
+
+
+def _period_to_days(period: str) -> int:
+    mapping = {'7d': 7, '30d': 30, '90d': 90}
+    return mapping.get(period, 7)
 
 
 # --- Runner

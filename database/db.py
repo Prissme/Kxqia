@@ -2,7 +2,7 @@
 import json
 import os
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -50,13 +50,14 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS daily_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE UNIQUE,
+                date DATE,
                 guild_id TEXT,
                 members_total INTEGER,
                 members_joined INTEGER,
                 members_left INTEGER,
                 messages_sent INTEGER,
-                commands_used INTEGER
+                commands_used INTEGER,
+                UNIQUE(date, guild_id)
             );
 
             CREATE TABLE IF NOT EXISTS config (
@@ -130,29 +131,131 @@ def _decode(value: str) -> Any:
         return value
 
 
-def record_daily_stats(date_value: date, guild_id: str, members_total: int, messages_sent: int, commands_used: int) -> None:
+def record_daily_stats(
+    date_value: date,
+    guild_id: str,
+    members_total: int,
+    messages_sent: int = 0,
+    commands_used: int = 0,
+    members_joined: int = 0,
+    members_left: int = 0,
+) -> None:
+    """Insert or increment daily stats for a guild on a given date."""
     with get_connection() as conn:
         conn.execute(
             """
             INSERT INTO daily_stats(date, guild_id, members_total, members_joined, members_left, messages_sent, commands_used)
-            VALUES (?, ?, ?, 0, 0, ?, ?)
-            ON CONFLICT(date) DO UPDATE SET members_total=excluded.members_total, messages_sent=excluded.messages_sent, commands_used=excluded.commands_used
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(date, guild_id) DO UPDATE SET
+                members_total=excluded.members_total,
+                members_joined=COALESCE(daily_stats.members_joined, 0) + excluded.members_joined,
+                members_left=COALESCE(daily_stats.members_left, 0) + excluded.members_left,
+                messages_sent=COALESCE(daily_stats.messages_sent, 0) + excluded.messages_sent,
+                commands_used=COALESCE(daily_stats.commands_used, 0) + excluded.commands_used
             """,
-            (date_value.isoformat(), guild_id, members_total, messages_sent, commands_used),
+            (
+                date_value.isoformat(),
+                guild_id,
+                members_total,
+                members_joined,
+                members_left,
+                messages_sent,
+                commands_used,
+            ),
         )
+
+
+def get_chart_data(days: int = 7) -> dict[str, list[dict[str, str | int]]]:
+    cutoff = date.today() - timedelta(days=days - 1)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT date, SUM(messages_sent) as messages, SUM(members_joined) as joined, SUM(members_left) as left
+            FROM daily_stats
+            WHERE date >= ?
+            GROUP BY date
+            ORDER BY date ASC
+            """,
+            (cutoff.isoformat(),),
+        ).fetchall()
+    def _format(row_date: str) -> str:
+        return datetime.fromisoformat(row_date).strftime('%d/%m')
+
+    return {
+        'messages': [{'label': _format(row['date']), 'value': row['messages'] or 0} for row in rows],
+        'members': [
+            {
+                'label': _format(row['date']),
+                'value': max((row['joined'] or 0) - (row['left'] or 0), 0),
+            }
+            for row in rows
+        ],
+    }
+
+
+def get_top_channels(limit: int = 5, days: int = 7) -> list[dict[str, str | int]]:
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT channel_id, COUNT(*) as message_count
+            FROM logs
+            WHERE type = 'message' AND timestamp >= ? AND channel_id IS NOT NULL
+            GROUP BY channel_id
+            ORDER BY message_count DESC
+            LIMIT ?
+            """,
+            (cutoff.isoformat(), limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_top_members(limit: int = 10, days: int = 7) -> list[dict[str, str | int]]:
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT user_id, COALESCE(MAX(user_name), '') as username, COUNT(*) as count
+            FROM logs
+            WHERE type = 'message' AND timestamp >= ? AND user_id IS NOT NULL
+            GROUP BY user_id
+            ORDER BY count DESC
+            LIMIT ?
+            """,
+            (cutoff.isoformat(), limit),
+        ).fetchall()
+    total = sum(row['count'] for row in rows) or 1
+    return [
+        {
+            'user_id': row['user_id'],
+            'username': row['username'] or row['user_id'],
+            'count': row['count'],
+            'percentage': round((row['count'] / total) * 100, 2),
+        }
+        for row in rows
+    ]
 
 
 def get_overview() -> dict[str, Any]:
     with get_connection() as conn:
         messages_total = conn.execute('SELECT COALESCE(SUM(messages_sent),0) as total FROM daily_stats').fetchone()['total']
-        members_total = conn.execute('SELECT members_total FROM daily_stats ORDER BY date DESC LIMIT 1').fetchone()
+        members_rows = conn.execute(
+            'SELECT guild_id, members_total FROM daily_stats WHERE id IN (SELECT MAX(id) FROM daily_stats GROUP BY guild_id)'
+        ).fetchall()
         alerts = conn.execute('SELECT COUNT(*) as total FROM logs WHERE level IN ("warning","error")').fetchone()['total']
         timeline = conn.execute('SELECT timestamp, type, message FROM logs ORDER BY timestamp DESC LIMIT 10').fetchall()
+        today = date.today().isoformat()
+        today_row = conn.execute(
+            'SELECT COALESCE(SUM(messages_sent),0) as messages, COALESCE(SUM(members_joined),0) as joined, COALESCE(SUM(members_left),0) as left FROM daily_stats WHERE date = ?',
+            (today,),
+        ).fetchone()
     return {
-        'members_total': members_total['members_total'] if members_total else 0,
+        'members_total': sum(row['members_total'] for row in members_rows),
         'messages_total': messages_total,
         'alerts': alerts,
         'alerts_pending': alerts,
+        'messages_today': today_row['messages'] if today_row else 0,
+        'members_today': (today_row['joined'] - today_row['left']) if today_row else 0,
         'timeline': [{'timestamp': row['timestamp'], 'message': row['message'], 'type': row['type']} for row in timeline],
     }
 
