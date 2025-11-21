@@ -45,6 +45,216 @@ async function loadOverview() {
   }
 }
 
+const analyticsState = {
+  range: '7d',
+  custom: false,
+  data: { contributors: [] },
+};
+
+const analyticsCharts = {
+  members: null,
+  topMembers: null,
+  roomActivity: null,
+};
+
+function applyRangeActive(range) {
+  document.querySelectorAll('[data-range]').forEach((btn) => {
+    btn.classList.toggle('btn-chip-active', btn.dataset.range === range);
+  });
+}
+
+function bindRangeControls() {
+  document.querySelectorAll('[data-range]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      analyticsState.range = btn.dataset.range;
+      analyticsState.custom = false;
+      applyRangeActive(btn.dataset.range);
+      loadAnalytics();
+    });
+  });
+
+  const start = document.getElementById('range-start');
+  const end = document.getElementById('range-end');
+  const applyBtn = document.getElementById('range-apply');
+  if (applyBtn) {
+    applyBtn.addEventListener('click', () => {
+      if (start?.value && end?.value) {
+        analyticsState.custom = true;
+        applyRangeActive('');
+        loadAnalytics();
+      }
+    });
+  }
+}
+
+async function loadAnalytics() {
+  const activeCard = document.getElementById('analytics-active');
+  if (!activeCard) return;
+
+  const params = new URLSearchParams();
+  if (analyticsState.custom) {
+    params.set('start', document.getElementById('range-start')?.value || '');
+    params.set('end', document.getElementById('range-end')?.value || '');
+  } else {
+    params.set('range', analyticsState.range);
+  }
+
+  try {
+    const data = await fetchJSON(`/api/analytics?${params.toString()}`);
+    analyticsState.data.contributors = data.top_members || [];
+    updateAnalyticsSummary(data.summary || {}, data);
+    renderMembersChart(data.members_chart || []);
+    renderTopMembersChart(data.top_members || []);
+    renderRoomActivity(data.top_channels || []);
+    renderHeatmap(data.heatmap || []);
+    renderContributorsTable(data.top_members || []);
+    applyRangeActive(analyticsState.custom ? '' : data.range || analyticsState.range);
+  } catch (error) {
+    console.error('Analytics error', error);
+  }
+}
+
+function updateAnalyticsSummary(summary, meta) {
+  const formatter = new Intl.NumberFormat('fr-FR');
+  const startLabel = meta.start ? new Date(meta.start).toLocaleString('fr-FR') : '';
+  const endLabel = meta.end ? new Date(meta.end).toLocaleString('fr-FR') : '';
+  document.getElementById('analytics-active').textContent = formatter.format(summary.active_members || 0);
+  document.getElementById('analytics-messages').textContent = formatter.format(summary.total_messages || 0);
+  document.getElementById('analytics-average').textContent = formatter.format(summary.average_per_day || 0);
+  const rangeLabel = document.getElementById('analytics-active-range');
+  if (rangeLabel && startLabel && endLabel) {
+    rangeLabel.textContent = `${startLabel} → ${endLabel}`;
+  }
+}
+
+function destroyChart(key) {
+  if (analyticsCharts[key]) {
+    analyticsCharts[key].destroy();
+    analyticsCharts[key] = null;
+  }
+}
+
+function renderMembersChart(entries) {
+  const ctx = document.getElementById('chart-members');
+  if (!ctx) return;
+  destroyChart('members');
+  analyticsCharts.members = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: entries.map((e) => e.label),
+      datasets: [
+        {
+          label: 'Net Joins',
+          data: entries.map((e) => e.value ?? e.net ?? 0),
+          borderColor: '#8B5CF6',
+          backgroundColor: 'rgba(139, 92, 246, 0.2)',
+          tension: 0.35,
+          fill: true,
+        },
+      ],
+    },
+    options: { responsive: true, plugins: { legend: { display: false } } },
+  });
+}
+
+function renderTopMembersChart(entries) {
+  const ctx = document.getElementById('chart-top-members');
+  if (!ctx) return;
+  destroyChart('topMembers');
+  analyticsCharts.topMembers = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: entries.map((e) => e.username ?? e.user_id),
+      datasets: [
+        {
+          label: 'Messages',
+          data: entries.map((e) => e.count),
+          backgroundColor: '#57F287',
+          borderRadius: 8,
+        },
+      ],
+    },
+    options: { responsive: true, plugins: { legend: { display: false } } },
+  });
+}
+
+function renderRoomActivity(entries) {
+  const ctx = document.getElementById('chart-room-activity');
+  if (!ctx) return;
+  destroyChart('roomActivity');
+  analyticsCharts.roomActivity = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: entries.map((e) => e.name || `#${e.channel_id}`),
+      datasets: [
+        {
+          label: 'Messages',
+          data: entries.map((e) => e.message_count),
+          backgroundColor: '#FEE75C',
+          borderRadius: 8,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#b9bbbe' } },
+        y: { ticks: { color: '#b9bbbe' } },
+      },
+    },
+  });
+}
+
+function renderHeatmap(entries) {
+  const container = document.getElementById('analytics-heatmap');
+  if (!container) return;
+  const dayMap = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+  container.innerHTML = '';
+  entries.forEach((cell) => {
+    const intensity = Math.min(1, (cell.count || 0) / 50);
+    const el = document.createElement('div');
+    el.className = 'heat-cell';
+    el.style.setProperty('--intensity', intensity.toString());
+    el.innerHTML = `<p class="text-[10px] text-muted">${dayMap[cell.weekday] || '?' } • ${String(cell.hour).padStart(2, '0')}h</p><p class="text-lg font-semibold">${cell.count}</p>`;
+    container.appendChild(el);
+  });
+}
+
+function renderContributorsTable(entries) {
+  const tbody = document.getElementById('contributors-table');
+  const search = document.getElementById('search-contrib')?.value?.toLowerCase() || '';
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const filtered = entries.filter((row) => (row.username || row.user_id || '').toLowerCase().includes(search));
+  filtered.forEach((row, idx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="px-3 py-2">#${idx + 1}</td>
+      <td class="px-3 py-2 font-semibold">${row.username || row.user_id}</td>
+      <td class="px-3 py-2">${row.count}</td>
+      <td class="px-3 py-2">${row.percentage || 0}%</td>
+      <td class="px-3 py-2 text-sm">${row.trend || '↗️ Stable'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function exportContributors() {
+  const rows = analyticsState.data.contributors || [];
+  const header = ['Rang', 'Utilisateur', 'Messages', 'Pourcentage'];
+  const csv = [header.join(',')]
+    .concat(
+      rows.map((row, idx) => [idx + 1, row.username || row.user_id, row.count, row.percentage].join(',')),
+    )
+    .join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'contributors.csv';
+  link.click();
+}
+
 function renderTimeline(items) {
   const container = document.getElementById('timeline');
   if (!container) return;
@@ -250,6 +460,7 @@ function refreshData() {
   loadOverview();
   loadLogs();
   loadModeration();
+  loadAnalytics();
 }
 
 function toggleMobileNav() {
@@ -262,4 +473,10 @@ window.addEventListener('DOMContentLoaded', () => {
   loadModeration();
   loadSettings();
   updatePurgeLabel();
+  bindRangeControls();
+  loadAnalytics();
+  const search = document.getElementById('search-contrib');
+  const exportBtn = document.getElementById('export-contrib');
+  search?.addEventListener('input', () => renderContributorsTable(analyticsState.data.contributors));
+  exportBtn?.addEventListener('click', exportContributors);
 });

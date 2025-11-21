@@ -236,6 +236,31 @@ def get_top_members(limit: int = 10, days: int = 7) -> list[dict[str, str | int]
     ]
 
 
+def get_top_members_between(start: datetime, end: datetime, limit: int = 10) -> list[dict[str, str | int]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT user_id, COALESCE(MAX(user_name), '') as username, COUNT(*) as count
+            FROM logs
+            WHERE type = 'message' AND timestamp BETWEEN ? AND ? AND user_id IS NOT NULL
+            GROUP BY user_id
+            ORDER BY count DESC
+            LIMIT ?
+            """,
+            (start.isoformat(), end.isoformat(), limit),
+        ).fetchall()
+    total = sum(row['count'] for row in rows) or 1
+    return [
+        {
+            'user_id': row['user_id'],
+            'username': row['username'] or row['user_id'],
+            'count': row['count'],
+            'percentage': round((row['count'] / total) * 100, 2),
+        }
+        for row in rows
+    ]
+
+
 def get_overview() -> dict[str, Any]:
     with get_connection() as conn:
         messages_total = conn.execute('SELECT COALESCE(SUM(messages_sent),0) as total FROM daily_stats').fetchone()['total']
@@ -319,3 +344,102 @@ def get_moderation_history(filters: dict[str, Any]) -> dict[str, Any]:
 def export_table(table: str) -> Iterable[sqlite3.Row]:
     with get_connection() as conn:
         yield from conn.execute(f'SELECT * FROM {table}')
+
+
+def get_activity_summary(start: datetime, end: datetime) -> dict[str, int]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) as messages, COUNT(DISTINCT user_id) as active_members
+            FROM logs
+            WHERE type = 'message' AND timestamp BETWEEN ? AND ?
+            """,
+            (start.isoformat(), end.isoformat()),
+        ).fetchone()
+    return {'messages': row['messages'] or 0, 'active_members': row['active_members'] or 0}
+
+
+def get_member_growth(start_date: date, end_date: date) -> list[dict[str, int | str]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT date, SUM(members_joined) as joined, SUM(members_left) as left
+            FROM daily_stats
+            WHERE date BETWEEN ? AND ?
+            GROUP BY date
+            ORDER BY date ASC
+            """,
+            (start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+
+    def _format(row_date: str) -> str:
+        return datetime.fromisoformat(row_date).strftime('%d/%m')
+
+    return [
+        {
+            'label': _format(row['date']),
+            'joined': row['joined'] or 0,
+            'left': row['left'] or 0,
+            'net': max((row['joined'] or 0) - (row['left'] or 0), 0),
+        }
+        for row in rows
+    ]
+
+
+def get_messages_timeseries(start: datetime, end: datetime) -> list[dict[str, int | str]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DATE(timestamp) as bucket, COUNT(*) as messages
+            FROM logs
+            WHERE type = 'message' AND timestamp BETWEEN ? AND ?
+            GROUP BY bucket
+            ORDER BY bucket ASC
+            """,
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+    return [
+        {
+            'label': datetime.fromisoformat(row['bucket']).strftime('%d/%m'),
+            'value': row['messages'] or 0,
+        }
+        for row in rows
+    ]
+
+
+def get_top_channels_between(start: datetime, end: datetime, limit: int = 10) -> list[dict[str, str | int]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT channel_id, COUNT(*) as message_count
+            FROM logs
+            WHERE type = 'message' AND timestamp BETWEEN ? AND ? AND channel_id IS NOT NULL
+            GROUP BY channel_id
+            ORDER BY message_count DESC
+            LIMIT ?
+            """,
+            (start.isoformat(), end.isoformat(), limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_heatmap_activity(start: datetime, end: datetime) -> list[dict[str, int | str]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT STRFTIME('%w', timestamp) as weekday, STRFTIME('%H', timestamp) as hour, COUNT(*) as count
+            FROM logs
+            WHERE type = 'message' AND timestamp BETWEEN ? AND ?
+            GROUP BY weekday, hour
+            ORDER BY weekday, hour
+            """,
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+    return [
+        {
+            'weekday': int(row['weekday']),
+            'hour': int(row['hour']),
+            'count': row['count'] or 0,
+        }
+        for row in rows
+    ]

@@ -441,6 +441,45 @@ def stats_overview():
     return jsonify(overview)
 
 
+@app.route('/api/analytics')
+def api_analytics():
+    now = datetime.datetime.utcnow()
+    start_param = request.args.get('start')
+    end_param = request.args.get('end')
+    range_param = request.args.get('range', '7d')
+
+    start_dt, end_dt = _resolve_range(now, range_param, start_param, end_param)
+    summary = db.get_activity_summary(start_dt, end_dt)
+    growth = db.get_member_growth(start_dt.date(), end_dt.date())
+    messages_series = db.get_messages_timeseries(start_dt, end_dt)
+    top_members = db.get_top_members_between(start_dt, end_dt)
+    top_channels = db.get_top_channels_between(start_dt, end_dt)
+    heatmap = db.get_heatmap_activity(start_dt, end_dt)
+
+    period_days = max((end_dt - start_dt).total_seconds() / 86400, 1)
+    average_per_day = round(summary['messages'] / period_days, 2)
+
+    payload = {
+        'range': range_param,
+        'start': start_dt.isoformat(),
+        'end': end_dt.isoformat(),
+        'summary': {
+            'active_members': summary['active_members'],
+            'total_messages': summary['messages'],
+            'average_per_day': average_per_day,
+        },
+        'members_chart': [{'label': row['label'], 'value': row['net']} for row in growth] or messages_series,
+        'top_members': top_members,
+        'top_channels': [
+            {'channel_id': row['channel_id'], 'name': _channel_label(row['channel_id']), 'message_count': row['message_count']}
+            for row in top_channels
+        ],
+        'heatmap': heatmap,
+    }
+
+    return jsonify(payload)
+
+
 @app.route('/api/stats/messages')
 def stats_messages_api():
     period = request.args.get('period', '7d')
@@ -631,9 +670,34 @@ def _channel_label(channel_id: str) -> str:
     return f"#{channel.name}" if channel else f"#{channel_id}"
 
 
+def _resolve_range(now: datetime.datetime, preset: str, start: str | None, end: str | None) -> tuple[datetime.datetime, datetime.datetime]:
+    if start and end:
+        try:
+            start_dt = datetime.datetime.fromisoformat(start)
+            end_dt = datetime.datetime.fromisoformat(end) + datetime.timedelta(days=1)
+            return start_dt, end_dt
+        except Exception:  # noqa: BLE001
+            pass
+
+    delta = _period_to_timedelta(preset)
+    return now - delta, now
+
+
 def _period_to_days(period: str) -> int:
     mapping = {'7d': 7, '30d': 30, '90d': 90}
     return mapping.get(period, 7)
+
+
+def _period_to_timedelta(period: str) -> datetime.timedelta:
+    mapping = {
+        '10m': datetime.timedelta(minutes=10),
+        '1h': datetime.timedelta(hours=1),
+        '24h': datetime.timedelta(hours=24),
+        '7d': datetime.timedelta(days=7),
+        '30d': datetime.timedelta(days=30),
+        '90d': datetime.timedelta(days=90),
+    }
+    return mapping.get(period, datetime.timedelta(days=7))
 
 
 # --- Runner
