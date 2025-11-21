@@ -1,0 +1,90 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="grid grid-cols-1 xl:grid-cols-4 gap-4">
+    <div class="card">
+        <p class="text-sm text-muted">👥 Membres</p>
+        <p class="text-3xl font-bold" id="members-total">--</p>
+        <p class="text-sm text-green-400" id="members-delta">+0 aujourd'hui</p>
+    </div>
+    <div class="card">
+        <p class="text-sm text-muted">💬 Messages</p>
+        <p class="text-3xl font-bold" id="messages-total">--</p>
+        <p class="text-sm text-green-400" id="messages-delta">+0 aujourd'hui</p>
+    </div>
+    <div class="card">
+        <p class="text-sm text-muted">⚠️ Alertes</p>
+        <p class="text-3xl font-bold" id="alerts-total">--</p>
+        <p class="text-sm text-yellow-300" id="alerts-pending">0 en attente</p>
+    </div>
+    <div class="card">
+        <p class="text-sm text-muted">⏱️ Uptime</p>
+        <p class="text-3xl font-bold" id="uptime">--</p>
+        <p class="text-sm text-green-400">99.9% uptime</p>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-6">
+    <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Messages par jour</h2>
+            <span class="badge">7 jours</span>
+        </div>
+        <canvas id="chart-messages"></canvas>
+    </div>
+    <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Top salons</h2>
+            <span class="badge">Top 5</span>
+        </div>
+        <canvas id="chart-channels"></canvas>
+    </div>
+    <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Répartition événements</h2>
+            <span class="badge">Live</span>
+        </div>
+        <canvas id="chart-events"></canvas>
+    </div>
+    <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Heatmap activité</h2>
+            <span class="badge">24h</span>
+        </div>
+        <div id="heatmap" class="grid grid-cols-6 gap-1 text-center"></div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-4 mt-6">
+    <div class="card xl:col-span-2">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold">Activité récente</h2>
+            <div class="flex gap-2 text-sm">
+                <button class="badge" data-filter="all">Tous</button>
+                <button class="badge" data-filter="moderation">Modération</button>
+                <button class="badge" data-filter="analytics">Analytics</button>
+                <button class="badge" data-filter="system">Système</button>
+            </div>
+        </div>
+        <ul id="timeline" class="space-y-3 text-sm"></ul>
+    </div>
+    <div class="card">
+        <h2 class="text-lg font-semibold mb-4">Infos serveur</h2>
+        <div class="flex items-center gap-3 mb-4">
+            <div class="w-14 h-14 rounded-xl bg-surface flex items-center justify-center text-2xl">🏰</div>
+            <div>
+                <p class="font-semibold" id="guild-name">Serveur</p>
+                <p class="text-muted text-sm" id="guild-id">ID --</p>
+            </div>
+        </div>
+        <dl class="space-y-2 text-sm">
+            <div class="flex justify-between"><dt class="text-muted">Membres total</dt><dd id="guild-members">--</dd></div>
+            <div class="flex justify-between"><dt class="text-muted">En ligne</dt><dd id="guild-online">--</dd></div>
+            <div class="flex justify-between"><dt class="text-muted">Bots</dt><dd id="guild-bots">--</dd></div>
+            <div class="flex justify-between"><dt class="text-muted">Création</dt><dd id="guild-created">--</dd></div>
+            <div class="flex justify-between"><dt class="text-muted">Propriétaire</dt><dd id="guild-owner">--</dd></div>
+        </dl>
+        <h3 class="font-semibold mt-4 mb-2">Top rôles</h3>
+        <ul id="guild-roles" class="space-y-1 text-sm"></ul>
+    </div>
+</div>
+{% endblock %}

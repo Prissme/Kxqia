@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="card space-y-4">
+        <h2 class="text-lg font-semibold">Actions rapides</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button class="btn-danger w-full" id="lock-server">🔒 LOCK SERVER</button>
+            <button class="btn-primary w-full" id="unlock-server">🔓 UNLOCK SERVER</button>
+        </div>
+    </div>
+    <div class="card space-y-4">
+        <h2 class="text-lg font-semibold">Infos modération</h2>
+        <p class="text-sm text-muted">Contrôlez les purges, locks et suivis en temps réel.</p>
+        <div class="flex gap-2 text-sm">
+            <span class="badge" id="mod-last-action">--</span>
+            <span class="badge" id="mod-open-issues">0 alertes</span>
+        </div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
+    <div class="card space-y-4">
+        <h2 class="text-lg font-semibold">Purge de salon</h2>
+        <label class="block text-sm text-muted">Salon</label>
+        <select class="input" id="purge-channel"></select>
+        <label class="block text-sm text-muted">Nombre de messages</label>
+        <input type="range" min="1" max="1000" value="100" class="w-full" id="purge-amount" oninput="updatePurgeLabel()">
+        <p class="text-sm">Valeur: <span id="purge-value">100</span></p>
+        <label class="block text-sm text-muted">Raison</label>
+        <input type="text" class="input" id="purge-reason" placeholder="Spam cleanup">
+        <button class="btn-primary" onclick="submitPurge()">🗑️ PURGE & LOCK</button>
+    </div>
+    <div class="card space-y-4">
+        <h2 class="text-lg font-semibold">Unpurge / Unlock</h2>
+        <label class="block text-sm text-muted">Salon verrouillé</label>
+        <select class="input" id="unpurge-channel"></select>
+        <label class="block text-sm text-muted">Raison</label>
+        <input type="text" class="input" id="unpurge-reason" placeholder="Retour à la normale">
+        <button class="btn-secondary" onclick="submitUnpurge()">🔓 UNLOCK</button>
+    </div>
+</div>
+
+<div class="card mt-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold">Historique actions</h2>
+        <div class="flex gap-2 text-sm">
+            <select class="input" id="filter-type">
+                <option value="all">Toutes</option>
+                <option value="purge">Purge</option>
+                <option value="unpurge">Unpurge</option>
+                <option value="lock">Lock</option>
+                <option value="unlock">Unlock</option>
+            </select>
+            <input type="date" class="input" id="filter-date">
+        </div>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="table-auto w-full text-sm">
+            <thead>
+                <tr>
+                    <th class="th">Date</th>
+                    <th class="th">Action</th>
+                    <th class="th">Salon</th>
+                    <th class="th">Par</th>
+                    <th class="th">Détails</th>
+                </tr>
+            </thead>
+            <tbody id="moderation-table" class="divide-y divide-surface"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

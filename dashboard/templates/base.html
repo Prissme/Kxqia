@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="fr" class="h-full" x-data="themeController()" :class="theme">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Bot Dashboard</title>
+    <link rel="icon" href="https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f916.svg">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" integrity="sha512-dx1rHNj2w7x1YgnSUQoqBYwygJyI072QtdgQXl3k5ufADG7n2AFD+a83H8XTur2qxGn8xYicbexdKGXN7qm9A==" crossorigin="anonymous" referrerpolicy="no-referrer">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" integrity="sha384-rO1h6VxuGAaHo9dZYkTfLZNVVRFl1kYyqS/fWznuaCG2l9VmOAXoJ1i8LJIcu4zN" crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="h-full bg-primary text-text transition-colors duration-300" x-init="initTheme()">
+<div class="min-h-full flex">
+    <aside class="w-64 bg-secondary border-r border-surface/50 hidden lg:flex flex-col">
+        <div class="flex items-center gap-3 p-5 border-b border-surface/40">
+            <div class="w-10 h-10 bg-blurple rounded-xl flex items-center justify-center text-white text-2xl">🤖</div>
+            <div>
+                <p class="text-lg font-semibold">Bot Dashboard</p>
+                <p class="text-sm text-muted">Surveillance & contrôle</p>
+            </div>
+        </div>
+        <nav class="flex-1 overflow-y-auto py-4">
+            <a href="/" class="nav-link" :class="isActive('/')">🏠 Dashboard</a>
+            <a href="/analytics" class="nav-link" :class="isActive('/analytics')">📊 Analytics</a>
+            <a href="/moderation" class="nav-link" :class="isActive('/moderation')">👮 Modération</a>
+            <a href="/logs" class="nav-link" :class="isActive('/logs')">📜 Logs</a>
+            <a href="/settings" class="nav-link" :class="isActive('/settings')">⚙️ Settings</a>
+        </nav>
+        <div class="p-4 border-t border-surface/40 text-sm space-y-1">
+            <p class="font-semibold">Bot Info</p>
+            <p>• <span id="sidebar-status" class="text-green-400">Online</span></p>
+            <p>• Latence: <span id="sidebar-latency">--</span> ms</p>
+            <p>• Guilds: <span id="sidebar-guilds">--</span></p>
+        </div>
+    </aside>
+    <div class="flex-1 flex flex-col">
+        <header class="sticky top-0 z-40 bg-secondary border-b border-surface/50">
+            <div class="flex items-center justify-between px-4 py-3">
+                <div class="flex items-center gap-3">
+                    <button class="lg:hidden btn-secondary" onclick="toggleMobileNav()"><i class="fa fa-bars"></i></button>
+                    <div>
+                        <p class="text-sm text-muted">Discord Dashboard</p>
+                        <h1 class="text-xl font-semibold">{{ title or 'Overview' }}</h1>
+                    </div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button class="btn-secondary" onclick="refreshData()"><i class="fa fa-rotate"></i> Refresh</button>
+                    <button class="btn-secondary" @click="toggleTheme">🌞 / 🌙</button>
+                    <span class="px-3 py-1 rounded-full bg-surface text-sm" id="bot-status">Statut: --</span>
+                </div>
+            </div>
+        </header>
+        <main class="flex-1 px-4 lg:px-8 py-6">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</div>
+<script src="{{ url_for('static', filename='js/websocket.js') }}"></script>
+<script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
