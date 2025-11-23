@@ -8,7 +8,9 @@ from typing import Any, Iterable
 
 from database.models import Config
 
-DB_PATH = Path(os.getenv('DATABASE_PATH', 'data/bot.db'))
+# Par défaut, on pointe vers /data pour profiter d'un volume persistant sur Koyeb
+# (configurable via DATABASE_PATH si besoin).
+DB_PATH = Path(os.getenv('DATABASE_PATH', '/data/bot.db'))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 

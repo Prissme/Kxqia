@@ -195,30 +195,18 @@ async def ping(ctx: commands.Context):
 
 def _pcsd_main_embed() -> discord.Embed:
     embed = discord.Embed(
-        title='PRISSCUP SHOWDOWN – Tournoi Nul Brôle',
-        description='Hosted by Prism',
-        color=0x5865F2,
-    )
-    embed.add_field(
-        name='Format rapide',
-        value='\n'.join(
-            [
-                '• Jeu : Brawl Stars',
-                '• Mode principal : Survivant',
-                '• Joueurs : 24',
-            ]
-        ),
-        inline=False,
+        title='PRISSCUP <:SD:1442143271685197987> – Tournoi <:NB:1442143671427399761>',
+        description='Hosted by Prissme',
+        color=0x00b8a9,
     )
     embed.add_field(
         name='Navigation',
         value='\n'.join(
             [
                 'Utilise le menu ci-dessous pour voir :',
-                '• Comment jouer',
-                '• Phase 1 – Qualifs',
-                '• Phase 2 – Demi-finales',
-                '• Phase 3 – Finale',
+                '• Phase 1 – Qualifs (solo, TOP 4 pour avancer)',
+                '• Phase 2 – Demi-finales (trio, 3 matchs)',
+                '• Phase 3 – Finale (solo, 3 manches décisives)',
             ]
         ),
         inline=False,
@@ -233,13 +221,13 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             title='PCSD – Phase 1 : Qualifs',
             description='\n'.join(
                 [
-                    'Première phase du tournoi : survivant solo. Une seule règle : fais TOP 4.',
+                    'Première phase du tournoi : Survivant Solo. Objectif simple : rester dans le TOP 4.',
                 ]
             ),
-            color=0x5865F2,
+            color=0xf59e0b,
         )
         embed.add_field(
-            name='Objectif',
+            name='Mode & objectif',
             value='\n'.join(
                 [
                     '• Mode : Survivant Solo',
@@ -259,6 +247,17 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             ),
             inline=False,
         )
+        embed.add_field(
+            name='Repères rapides',
+            value='\n'.join(
+                [
+                    '• 24 joueurs au départ',
+                    '• Seul le placement compte',
+                    '• Les 4 premiers de chaque lobby passent en Phase 2',
+                ]
+            ),
+            inline=False,
+        )
         return embed
 
     if option == 'demi':
@@ -266,10 +265,10 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             title='PCSD – Phase 2 : Demi-finales',
             description='\n'.join(
                 [
-                    '12 joueurs restent. 3 matchs. Le TOP 1 de chaque partie qualifie ses 3 joueurs.',
+                    '12 joueurs restent. 3 matchs en Survivant Trio : chaque TOP 1 qualifie ses 3 joueurs.',
                 ]
             ),
-            color=0x5865F2,
+            color=0x2563eb,
         )
         embed.add_field(
             name='Composition des équipes',
@@ -284,7 +283,7 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             inline=False,
         )
         embed.add_field(
-            name='Format',
+            name='Format des matchs',
             value='\n'.join(
                 [
                     '• Mode : Survivant Trio',
@@ -302,6 +301,18 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
                 [
                     '• 10 min de retard = DQ',
                     '• Pas de remake',
+                    '• On rejoue immédiatement le lobby suivant après chaque TOP1',
+                ]
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name='Ce qu’il faut retenir',
+            value='\n'.join(
+                [
+                    '• 12 joueurs → 3 manches',
+                    '• Chaque TOP1 qualifie son trio',
+                    '• 9 joueurs au total passent en Phase 3',
                 ]
             ),
             inline=False,
@@ -313,10 +324,10 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             title='PCSD – Phase 3 : Finale',
             description='\n'.join(
                 [
-                    '9 finalistes. 3 manches. Placement + kills = champion.',
+                    '9 finalistes, 3 manches en Survivant Solo. Placement + kills = champion.',
                 ]
             ),
-            color=0x5865F2,
+            color=0x8b5cf6,
         )
         embed.add_field(
             name='Format',
@@ -360,74 +371,7 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
         )
         return embed
 
-    embed = discord.Embed(
-        title='PCSD – Comment jouer',
-        description='\n'.join(
-            [
-                'Tournoi 100% Survivant. Tu progresses phase par phase.',
-                'Lis les sections ci-dessous pour comprendre chaque étape.',
-            ]
-        ),
-        color=0x5865F2,
-    )
-    embed.add_field(
-        name='Phase 1 – Qualifs',
-        value='\n'.join(
-            [
-                '• Mode : Survivant Solo',
-                '• Objectif : faire TOP 4 dans ta partie',
-                '• Si tu fais TOP 4 → qualifié',
-            ]
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='Phase 2 – Demi-finales',
-        value='\n'.join(
-            [
-                '• 12 joueurs',
-                '• Mode : Survivant Trio',
-                '• 3 matchs : dans chaque match, la team TOP 1 qualifie ses 3 joueurs',
-                '• Total finalistes : 9',
-            ]
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='Teams en demi-finale',
-        value='\n'.join(
-            [
-                '• Les TOP1 de la Phase 1 sont ensemble',
-                '• Les TOP2 de la Phase 1 sont ensemble',
-                '• Les TOP3 de la Phase 1 sont ensemble',
-                '• Les TOP4 de la Phase 1 sont ensemble',
-            ]
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='Phase 3 – Finale',
-        value='\n'.join(
-            [
-                '• 9 joueurs',
-                '• Survivant Solo × 3 manches',
-                '• Placement + Kills',
-                '• Chaque kill = +2 points',
-            ]
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name='Règles principales',
-        value='\n'.join(
-            [
-                '• 10 min de retard = DQ',
-                '• Pas de remake (déco / bug = perdu)',
-            ]
-        ),
-        inline=False,
-    )
-    return embed
+    return _pcsd_main_embed()
 
 
 def _pcsd_view() -> discord.ui.View:
@@ -435,9 +379,8 @@ def _pcsd_view() -> discord.ui.View:
     view.add_item(
         discord.ui.Select(
             custom_id='pcsd_menu',
-            placeholder='Choisis une section',
+            placeholder='Choisis une phase',
             options=[
-                discord.SelectOption(label='Comment jouer', value='comment_jouer'),
                 discord.SelectOption(label='Phase 1 – Qualifs', value='phase1'),
                 discord.SelectOption(label='Phase 2 – Demi-finales', value='demi'),
                 discord.SelectOption(label='Phase 3 – Finale', value='finale'),
@@ -460,7 +403,7 @@ async def on_interaction(interaction: discord.Interaction):
         and interaction.data.get('custom_id') == 'pcsd_menu'
     ):
         values = interaction.data.get('values') or []
-        selected = values[0] if values else 'comment_jouer'
+        selected = values[0] if values else 'phase1'
         await interaction.response.edit_message(embed=_pcsd_content_embed(selected), view=_pcsd_view())
         return
 

@@ -23,7 +23,7 @@ Variables d'environnement principales :
 ```
 DISCORD_TOKEN=votre_token
 PORT=8000
-DATABASE_PATH=data/bot.db
+DATABASE_PATH=/data/bot.db
 SECRET_KEY=change-me
 ```
 
@@ -37,7 +37,7 @@ Le dashboard est disponible sur http://localhost:8000 et le bot se connecte à D
 - Service Web sur le port `8000` (variable `PORT`).
 - Commande de démarrage : `python main.py`
 - Health check HTTP `/health`.
-- Volume persistant recommandé pour `data/` (SQLite).
+- Volume persistant recommandé monté sur `/data` (SQLite).
 
 ## Export & sauvegarde
 - `GET /api/export/logs` → CSV des logs
