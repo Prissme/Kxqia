@@ -193,6 +193,280 @@ async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
 
 
+def _pcsd_main_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title='PRISSCUP SHOWDOWN – Tournoi Nul Brôle',
+        description='Hosted by Prism',
+        color=0x5865F2,
+    )
+    embed.add_field(
+        name='Format rapide',
+        value='\n'.join(
+            [
+                '• Jeu : Brawl Stars',
+                '• Mode principal : Survivant',
+                '• Joueurs : 24',
+            ]
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name='Navigation',
+        value='\n'.join(
+            [
+                'Utilise le menu ci-dessous pour voir :',
+                '• Comment jouer',
+                '• Phase 1 – Qualifs',
+                '• Phase 2 – Demi-finales',
+                '• Phase 3 – Finale',
+            ]
+        ),
+        inline=False,
+    )
+    embed.set_footer(text='Commande : !pcsd')
+    return embed
+
+
+def _pcsd_content_embed(option: str) -> discord.Embed:
+    if option == 'phase1':
+        embed = discord.Embed(
+            title='PCSD – Phase 1 : Qualifs',
+            description='\n'.join(
+                [
+                    'Première phase du tournoi : survivant solo. Une seule règle : fais TOP 4.',
+                ]
+            ),
+            color=0x5865F2,
+        )
+        embed.add_field(
+            name='Objectif',
+            value='\n'.join(
+                [
+                    '• Mode : Survivant Solo',
+                    '• Faut faire TOP 4 pour avancer',
+                    '• 5e ou pire = éliminé',
+                ]
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name='Règles',
+            value='\n'.join(
+                [
+                    '• 10 min de retard = DQ',
+                    '• Pas de remake',
+                ]
+            ),
+            inline=False,
+        )
+        return embed
+
+    if option == 'demi':
+        embed = discord.Embed(
+            title='PCSD – Phase 2 : Demi-finales',
+            description='\n'.join(
+                [
+                    '12 joueurs restent. 3 matchs. Le TOP 1 de chaque partie qualifie ses 3 joueurs.',
+                ]
+            ),
+            color=0x5865F2,
+        )
+        embed.add_field(
+            name='Composition des équipes',
+            value='\n'.join(
+                [
+                    '• TOP1 de la Phase 1 ensemble',
+                    '• TOP2 de la Phase 1 ensemble',
+                    '• TOP3 de la Phase 1 ensemble',
+                    '• TOP4 de la Phase 1 ensemble',
+                ]
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name='Format',
+            value='\n'.join(
+                [
+                    '• Mode : Survivant Trio',
+                    '• Match 1 : TOP1 → les 3 joueurs qualifiés',
+                    '• Match 2 : on relance avec 9 joueurs → TOP1 → qualifiés',
+                    '• Match 3 : on relance avec 6 joueurs → TOP1 → qualifiés',
+                    '• Total qualifiés : 9',
+                ]
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name='Règles',
+            value='\n'.join(
+                [
+                    '• 10 min de retard = DQ',
+                    '• Pas de remake',
+                ]
+            ),
+            inline=False,
+        )
+        return embed
+
+    if option == 'finale':
+        embed = discord.Embed(
+            title='PCSD – Phase 3 : Finale',
+            description='\n'.join(
+                [
+                    '9 finalistes. 3 manches. Placement + kills = champion.',
+                ]
+            ),
+            color=0x5865F2,
+        )
+        embed.add_field(
+            name='Format',
+            value='\n'.join(
+                [
+                    '• Mode : Survivant Solo',
+                    '• 3 manches consécutives',
+                ]
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name='Points',
+            value='\n'.join(
+                [
+                    '• Placement = points (définis par l’host)',
+                    '• Chaque kill = +2 points',
+                    '• Total des 3 manches = classement final',
+                ]
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name='Égalité',
+            value='\n'.join(
+                [
+                    '• Égalité → 1v1 (mode au choix de l’host)',
+                ]
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name='Règles',
+            value='\n'.join(
+                [
+                    '• 10 min de retard = DQ',
+                    '• Pas de remake',
+                ]
+            ),
+            inline=False,
+        )
+        return embed
+
+    embed = discord.Embed(
+        title='PCSD – Comment jouer',
+        description='\n'.join(
+            [
+                'Tournoi 100% Survivant. Tu progresses phase par phase.',
+                'Lis les sections ci-dessous pour comprendre chaque étape.',
+            ]
+        ),
+        color=0x5865F2,
+    )
+    embed.add_field(
+        name='Phase 1 – Qualifs',
+        value='\n'.join(
+            [
+                '• Mode : Survivant Solo',
+                '• Objectif : faire TOP 4 dans ta partie',
+                '• Si tu fais TOP 4 → qualifié',
+            ]
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name='Phase 2 – Demi-finales',
+        value='\n'.join(
+            [
+                '• 12 joueurs',
+                '• Mode : Survivant Trio',
+                '• 3 matchs : dans chaque match, la team TOP 1 qualifie ses 3 joueurs',
+                '• Total finalistes : 9',
+            ]
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name='Teams en demi-finale',
+        value='\n'.join(
+            [
+                '• Les TOP1 de la Phase 1 sont ensemble',
+                '• Les TOP2 de la Phase 1 sont ensemble',
+                '• Les TOP3 de la Phase 1 sont ensemble',
+                '• Les TOP4 de la Phase 1 sont ensemble',
+            ]
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name='Phase 3 – Finale',
+        value='\n'.join(
+            [
+                '• 9 joueurs',
+                '• Survivant Solo × 3 manches',
+                '• Placement + Kills',
+                '• Chaque kill = +2 points',
+            ]
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name='Règles principales',
+        value='\n'.join(
+            [
+                '• 10 min de retard = DQ',
+                '• Pas de remake (déco / bug = perdu)',
+            ]
+        ),
+        inline=False,
+    )
+    return embed
+
+
+def _pcsd_view() -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(
+        discord.ui.Select(
+            custom_id='pcsd_menu',
+            placeholder='Choisis une section',
+            options=[
+                discord.SelectOption(label='Comment jouer', value='comment_jouer'),
+                discord.SelectOption(label='Phase 1 – Qualifs', value='phase1'),
+                discord.SelectOption(label='Phase 2 – Demi-finales', value='demi'),
+                discord.SelectOption(label='Phase 3 – Finale', value='finale'),
+            ],
+        )
+    )
+    return view
+
+
+@bot.command(name='pcsd')
+async def pcsd(ctx: commands.Context):
+    await ctx.send(embed=_pcsd_main_embed(), view=_pcsd_view())
+
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if (
+        interaction.type == discord.InteractionType.component
+        and interaction.data
+        and interaction.data.get('custom_id') == 'pcsd_menu'
+    ):
+        values = interaction.data.get('values') or []
+        selected = values[0] if values else 'comment_jouer'
+        await interaction.response.edit_message(embed=_pcsd_content_embed(selected), view=_pcsd_view())
+        return
+
+    await bot.process_application_commands(interaction)
+
+
 @bot.command(name='syncstats')
 @commands.has_permissions(administrator=True)
 async def syncstats(ctx: commands.Context):
