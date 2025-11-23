@@ -784,6 +784,23 @@ def api_config():
     return jsonify({'success': True, 'config': new_config.to_dict()})
 
 
+@app.route('/api/database/stats')
+def api_database_stats():
+    return jsonify(db.get_database_stats())
+
+
+@app.route('/api/backup', methods=['POST'])
+def api_backup():
+    backup_path = db.backup_database()
+    db.log_event('maintenance', 'info', 'Backup créé via API', path=str(backup_path))
+    return send_file(
+        backup_path,
+        mimetype='application/octet-stream',
+        as_attachment=True,
+        download_name=backup_path.name,
+    )
+
+
 @app.route('/api/export/logs')
 def export_logs():
     return _export_csv('logs')
