@@ -2,15 +2,28 @@
 import json
 import os
 import sqlite3
+import logging
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
 from database.models import Config
 
-# Par défaut, on pointe vers /data pour profiter d'un volume persistant sur Koyeb
-# (configurable via DATABASE_PATH si besoin).
-DB_PATH = Path(os.getenv('DATABASE_PATH', '/data/bot.db'))
+logger = logging.getLogger(__name__)
+
+
+def _resolve_db_path() -> Path:
+    env_path = os.getenv('DATABASE_PATH')
+    if env_path:
+        return Path(env_path)
+    persistent_path = Path('/data/bot.db')
+    local_path = Path(__file__).resolve().parent / 'bot.db'
+    if persistent_path.parent.exists() and os.access(persistent_path.parent, os.W_OK):
+        return persistent_path
+    return local_path
+
+
+DB_PATH = _resolve_db_path()
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -21,6 +34,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    logger.info('Utilisation de la base SQLite: %s', DB_PATH)
     with get_connection() as conn:
         conn.executescript(
             """
@@ -445,3 +459,39 @@ def get_heatmap_activity(start: datetime, end: datetime) -> list[dict[str, int |
         }
         for row in rows
     ]
+
+
+def backup_database(destination_dir: Path | str | None = None) -> Path:
+    """Crée une sauvegarde horodatée de la base et retourne le chemin généré."""
+    backup_dir = Path(destination_dir) if destination_dir else DB_PATH.parent
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    backup_path = backup_dir / f'bot_backup_{timestamp}.db'
+    with get_connection() as source_conn:
+        with sqlite3.connect(backup_path) as backup_conn:
+            source_conn.backup(backup_conn)
+    logger.info('Backup SQLite créé: %s', backup_path)
+    return backup_path
+
+
+def get_database_stats() -> dict[str, Any]:
+    """Retourne quelques métriques sur la base courante."""
+    size_bytes = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    backup_dir = DB_PATH.parent
+    backup_files = sorted(backup_dir.glob('bot_backup_*.db'))
+    last_backup = backup_files[-1] if backup_files else None
+    with get_connection() as conn:
+        counts = {
+            'logs': conn.execute('SELECT COUNT(*) FROM logs').fetchone()[0],
+            'moderation_actions': conn.execute('SELECT COUNT(*) FROM moderation_actions').fetchone()[0],
+            'daily_stats': conn.execute('SELECT COUNT(*) FROM daily_stats').fetchone()[0],
+            'config': conn.execute('SELECT COUNT(*) FROM config').fetchone()[0],
+        }
+        last_log_row = conn.execute('SELECT MAX(timestamp) as ts FROM logs').fetchone()
+    return {
+        'path': str(DB_PATH),
+        'size_bytes': size_bytes,
+        'tables': counts,
+        'last_log_entry': last_log_row['ts'] if last_log_row else None,
+        'last_backup': str(last_backup) if last_backup else None,
+    }
