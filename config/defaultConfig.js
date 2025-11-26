@@ -1,5 +1,15 @@
 export default {
   logChannelId: "", // channel where security logs are sent
+  slowMode: {
+    enabled: true,
+    windowSeconds: 60,
+    minUpdateIntervalSeconds: 15,
+    tiers: [
+      { threshold: 60, seconds: 10 },
+      { threshold: 30, seconds: 5 },
+      { threshold: 15, seconds: 2 }
+    ]
+  },
   raid: {
     joinThreshold: 10, // joins in 60s before triggering raid
     accountAgeDays: 7, // minimum account age to be considered safe
