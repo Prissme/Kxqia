@@ -16,6 +16,7 @@ class Config:
     retention_days: int = 30
     cleanup: bool = True
     slow_mode: dict[str, Any] = None
+    trust_levels: dict[str, str] = None
 
     @staticmethod
     def default_slow_mode() -> dict[str, Any]:
@@ -34,6 +35,7 @@ class Config:
     def from_mapping(cls, mapping: Optional[dict[str, Any]] = None) -> "Config":
         mapping = mapping or {}
         slow_mode = mapping.get('slow_mode') or mapping.get('slowMode') or cls.default_slow_mode()
+        trust_levels = mapping.get('trust_levels', {}) or mapping.get('trustLevels', {})
         return cls(
             prefix=mapping.get('prefix', cls.prefix),
             language=mapping.get('language', cls.language),
@@ -45,6 +47,7 @@ class Config:
             retention_days=int(mapping.get('retention_days', cls.retention_days)),
             cleanup=bool(mapping.get('cleanup', cls.cleanup)),
             slow_mode=_normalize_slow_mode(slow_mode),
+            trust_levels=trust_levels if isinstance(trust_levels, dict) else {},
         )
 
     def to_dict(self) -> dict[str, Any]:

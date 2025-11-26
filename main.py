@@ -15,6 +15,10 @@ from flask_socketio import SocketIO
 
 from database import db
 from database.models import Config
+from bot.anti_nuke import AntiNuke
+from bot.anti_raid import AntiRaid
+from bot.trust_levels import get_trust_level, is_trusted
+from bot.slow_mode import SlowModeManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,11 +44,13 @@ socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
 start_time = datetime.datetime.utcnow()
 
-vote_ban_votes: dict[int, dict[int, dict[int, str]]] = defaultdict(lambda: defaultdict(dict))
-
 # --- Database initialization
 db.init_db()
 config = db.load_config()
+
+slow_mode_manager = SlowModeManager(bot, config.to_dict())
+anti_nuke = AntiNuke(bot, config.to_dict())
+anti_raid = AntiRaid(bot, config.to_dict())
 
 
 def uptime() -> str:
@@ -65,6 +71,25 @@ def _can_user_vote(member: discord.Member) -> tuple[bool, str]:
         return False, f"Vous devez avoir envoyé au moins 100 messages sur le serveur (actuel: {total_messages})."
 
     return True, str(total_messages)
+
+
+def calculate_vote_weight(member: Optional[discord.Member], total_messages: int) -> float:
+    weight = 1.0
+    if member:
+        account_age_days = (datetime.datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
+        if account_age_days > 365:
+            weight += 0.5
+        elif account_age_days > 180:
+            weight += 0.3
+        elif account_age_days > 90:
+            weight += 0.1
+    if total_messages > 5000:
+        weight += 0.5
+    elif total_messages > 1000:
+        weight += 0.3
+    elif total_messages > 500:
+        weight += 0.1
+    return min(weight, 2.0)
 
 
 async def _apply_vote_action(
@@ -130,7 +155,7 @@ async def _apply_vote_action(
                 'duration_minutes': duration_minutes,
             },
         )
-        vote_ban_votes[ctx.guild.id].pop(member.id, None)
+        db.clear_vote_bans(str(ctx.guild.id), str(member.id))
         return f"🚫 {member.mention} est banni définitivement ({threshold} votes)."
 
     try:
@@ -253,6 +278,7 @@ async def on_message(message: discord.Message):
         members_total=guild.member_count,
         messages_sent=1,
     )
+    slow_mode_manager.handle_message(message)
 
 
 @bot.event
@@ -271,6 +297,7 @@ async def on_member_join(member: discord.Member):
         members_total=member.guild.member_count,
         members_joined=1,
     )
+    anti_raid.handle_member_join(member)
 
 
 @bot.event
@@ -289,6 +316,31 @@ async def on_member_remove(member: discord.Member):
         members_total=member.guild.member_count,
         members_left=1,
     )
+
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    await anti_nuke.handle_channel_delete(channel)
+
+
+@bot.event
+async def on_guild_role_delete(role):
+    await anti_nuke.handle_role_delete(role)
+
+
+@bot.event
+async def on_member_ban(guild, user):
+    await anti_nuke.handle_ban(guild)
+
+
+@bot.event
+async def on_webhooks_update(channel):
+    await anti_nuke.handle_webhook_create(channel)
+
+
+@bot.event
+async def on_guild_channel_update(before, after):
+    await anti_nuke.handle_channel_update(before, after)
 
 
 @bot.command(name='help')
@@ -334,19 +386,40 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
         await ctx.send("Vous ne pouvez pas voter contre vous-même.")
         return
 
+    if member.guild_permissions.manage_messages or member.guild_permissions.kick_members:
+        await ctx.send("Impossible de voter contre un modérateur.")
+        return
+
+    last_sanction = db.get_last_voteban_sanction(str(ctx.guild.id), str(member.id))
+    if last_sanction and (datetime.datetime.utcnow() - last_sanction) < datetime.timedelta(hours=24):
+        await ctx.send("Ce membre a déjà été sanctionné récemment. Cooldown de 24h en cours.")
+        return
+
     can_vote, detail = _can_user_vote(ctx.author)
     if not can_vote:
         await ctx.send(detail)
         return
 
-    guild_votes = vote_ban_votes[ctx.guild.id][member.id]
-    if ctx.author.id in guild_votes:
-        await ctx.send("Vous avez déjà voté pour ce bannissement.")
+    daily_votes = db.get_user_daily_votes(str(ctx.guild.id), str(ctx.author.id))
+    if daily_votes >= 3:
+        await ctx.send("Limite de 3 votes par jour atteinte.")
         return
 
     cleaned_reason = reason.strip()
-    guild_votes[ctx.author.id] = cleaned_reason
-    total_votes = len(guild_votes)
+    inserted = db.add_vote_ban(str(ctx.guild.id), str(member.id), str(ctx.author.id), cleaned_reason)
+    if not inserted:
+        await ctx.send("Vous avez déjà voté pour ce bannissement.")
+        return
+
+    all_votes = db.get_vote_bans(str(ctx.guild.id), str(member.id))
+    total_votes = len(all_votes)
+    total_weight = sum(
+        calculate_vote_weight(
+            ctx.guild.get_member(int(v['voter_user_id'])),
+            db.count_user_messages(v['voter_user_id'], str(ctx.guild.id)),
+        )
+        for v in all_votes
+    )
 
     db.log_event(
         'moderation',
@@ -366,11 +439,12 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
 
     status_lines = [
         f'🗳️ {ctx.author.mention} a voté pour bannir {member.mention} ({total_votes}/20).',
+        f'Poids cumulé : {total_weight:.1f}',
         f'Raison : {cleaned_reason}',
         'Seuils : 2 votes = 10 min de mute, 5 votes = 2h de mute, 20 votes = ban définitif.'
     ]
 
-    action_feedback = await _apply_vote_action(ctx, member, total_votes, cleaned_reason)
+    action_feedback = await _apply_vote_action(ctx, member, int(total_weight), cleaned_reason)
 
     if action_feedback:
         status_lines.append(action_feedback)
@@ -378,12 +452,29 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
         status_lines.append("Aucune sanction appliquée pour le moment.")
 
     reasons_list = '\n'.join(
-        f"- {ctx.guild.get_member(user_id).mention if ctx.guild.get_member(user_id) else user_id}: {vote_reason}"
-        for user_id, vote_reason in guild_votes.items()
+        f"- {ctx.guild.get_member(int(v['voter_user_id'])).mention if ctx.guild.get_member(int(v['voter_user_id'])) else v['voter_user_id']}: {v['reason']}"
+        for v in all_votes
     )
     status_lines.append('Votes actuels :\n' + reasons_list)
 
     await ctx.send('\n'.join(status_lines))
+
+
+@bot.command(name='votestatus')
+async def votestatus(ctx: commands.Context, member: Optional[discord.Member] = None):
+    target = member or ctx.author
+    votes = db.get_vote_bans(str(ctx.guild.id), str(target.id)) if ctx.guild else []
+    if not votes:
+        await ctx.send(f"Aucun vote actif contre {target.mention}.")
+        return
+
+    embed = discord.Embed(title=f"📊 Votes contre {target.display_name}", color=0x5865f2)
+    for i, vote in enumerate(votes[:10], 1):
+        voter = ctx.guild.get_member(int(vote['voter_user_id'])) if ctx.guild else None
+        voter_name = voter.mention if voter else f"<@{vote['voter_user_id']}>"
+        embed.add_field(name=f"Vote #{i}", value=f"{voter_name}\n*{vote['reason'][:100]}*", inline=False)
+    embed.set_footer(text=f"Total: {len(votes)} votes • Expiration: 7 jours")
+    await ctx.send(embed=embed)
 
 
 def _pcsd_main_embed() -> discord.Embed:
@@ -753,6 +844,12 @@ async def unpurge(interaction: discord.Interaction, reason: Optional[str] = None
     await interaction.followup.send('Le salon est à nouveau disponible pour les membres.', ephemeral=True)
 
 
+@bot.tree.command(name='lockdown', description='Active/désactive le lockdown du serveur')
+@app_commands.describe(state='enable ou disable')
+async def lockdown(interaction: discord.Interaction, state: str):
+    await anti_raid.handle_lockdown_command(interaction, state.lower() == 'enable')
+
+
 @bot.tree.command(name='stats_last_3_months', description='Compte les auteurs uniques ayant parlé durant les 3 derniers mois (historique inclus)')
 async def stats_last_3_months(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -815,6 +912,11 @@ def logs_page():
 @app.route('/settings')
 def settings_page():
     return render_template('settings.html', title='Settings')
+
+
+@app.route('/security')
+def security_page():
+    return render_template('security.html', title='Sécurité')
 
 
 @app.route('/health')
@@ -967,14 +1069,50 @@ def api_unpurge():
 
 @app.route('/api/config', methods=['GET', 'POST'])
 def api_config():
-    global config
+    global config, slow_mode_manager, anti_nuke, anti_raid
     if request.method == 'GET':
         return jsonify(config.to_dict())
     payload = request.get_json(force=True)
     new_config = Config.from_mapping(payload)
     db.save_config(new_config)
     config = new_config
+    slow_mode_manager.update_config(new_config.to_dict())
+    anti_nuke.update_config(new_config.to_dict())
+    anti_raid.update_config(new_config.to_dict())
     return jsonify({'success': True, 'config': new_config.to_dict()})
+
+
+@app.route('/api/whitelist', methods=['GET'])
+def api_get_whitelist():
+    trust_levels = db.get_trust_levels()
+    result = []
+    for user_id, level in trust_levels.items():
+        user = bot.get_user(int(user_id)) if bot_status.get('ready') else None
+        result.append({
+            'user_id': user_id,
+            'username': str(user) if user else f"User {user_id}",
+            'level': level,
+        })
+    return jsonify(result)
+
+
+@app.route('/api/whitelist', methods=['POST'])
+def api_add_whitelist():
+    payload = request.get_json(force=True)
+    user_id = payload.get('user_id')
+    level = payload.get('level')
+    if not user_id or level not in ['OWNER', 'TRUSTED_ADMIN', 'NORMAL_ADMIN', 'DEFAULT_USER']:
+        return jsonify({'success': False, 'error': 'Invalid data'}), 400
+    db.set_trust_level(user_id, level)
+    db.log_event('security', 'info', f'Trust level changed: {user_id} → {level}')
+    return jsonify({'success': True})
+
+
+@app.route('/api/whitelist/<user_id>', methods=['DELETE'])
+def api_remove_whitelist(user_id: str):
+    db.remove_trust_level(user_id)
+    db.log_event('security', 'info', f'Trust level removed: {user_id}')
+    return jsonify({'success': True})
 
 
 @app.route('/api/database/stats')
@@ -1056,6 +1194,9 @@ def handle_update_config(data):
     db.save_config(new_cfg)
     global config
     config = new_cfg
+    slow_mode_manager.update_config(new_cfg.to_dict())
+    anti_nuke.update_config(new_cfg.to_dict())
+    anti_raid.update_config(new_cfg.to_dict())
     socketio.emit('config_updated', new_cfg.to_dict())
 
 
