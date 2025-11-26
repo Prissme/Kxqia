@@ -21,6 +21,34 @@ async function fetchJSON(url) {
   return res.json();
 }
 
+const DEFAULT_CONFIG = {
+  prefix: '!',
+  language: 'fr',
+  timezone: 'Europe/Brussels',
+  auto_refresh: true,
+  notifications: true,
+  page_size: 20,
+  log_level: 'INFO',
+  retention_days: 30,
+  cleanup: true,
+  slow_mode: {
+    enabled: true,
+    window_seconds: 60,
+    min_update_interval_seconds: 15,
+    tiers: [
+      { threshold: 60, seconds: 10 },
+      { threshold: 30, seconds: 5 },
+      { threshold: 15, seconds: 2 },
+    ],
+  },
+};
+
+function cloneDefaultConfig() {
+  return JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+}
+
+let configState = cloneDefaultConfig();
+
 async function loadOverview() {
   try {
     const data = await fetchJSON('/api/stats/overview');
@@ -430,25 +458,164 @@ async function submitUnpurge() {
 async function loadSettings() {
   try {
     const config = await fetchJSON('/api/config');
-    document.getElementById('config-prefix').value = config.prefix || '!';
-    document.getElementById('config-language').value = config.language || 'fr';
-    document.getElementById('config-timezone').value = config.timezone || 'Europe/Brussels';
+    configState = { ...cloneDefaultConfig(), ...config, slow_mode: { ...cloneDefaultConfig().slow_mode, ...(config.slow_mode || {}) } };
+    applyConfigToForm(configState);
+    applySlowModeConfig(configState.slow_mode);
   } catch (error) {
     console.error(error);
   }
 }
 
 async function saveConfig() {
-  const payload = {
-    prefix: document.getElementById('config-prefix').value,
-    language: document.getElementById('config-language').value,
-    timezone: document.getElementById('config-timezone').value,
-  };
+  const payload = collectConfigPayload();
   await fetch('/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  configState = payload;
+}
+
+async function saveSlowMode() {
+  const payload = collectConfigPayload();
+  await fetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  configState = payload;
+}
+
+function setValueIfPresent(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (el.type === 'checkbox') {
+    el.checked = Boolean(value);
+  } else {
+    el.value = value ?? '';
+  }
+}
+
+function applyConfigToForm(config) {
+  setValueIfPresent('config-prefix', config.prefix);
+  setValueIfPresent('config-language', config.language);
+  setValueIfPresent('config-timezone', config.timezone);
+  setValueIfPresent('config-auto-refresh', config.auto_refresh);
+  setValueIfPresent('config-notifications', config.notifications);
+  setValueIfPresent('config-page-size', config.page_size);
+  setValueIfPresent('config-log-level', config.log_level);
+  setValueIfPresent('config-retention', config.retention_days);
+  setValueIfPresent('config-cleanup', config.cleanup);
+}
+
+function applySlowModeConfig(slowMode) {
+  const config = slowMode || cloneDefaultConfig().slow_mode;
+  setValueIfPresent('slowmode-enabled', config.enabled);
+  setValueIfPresent('slowmode-window', config.window_seconds);
+  setValueIfPresent('slowmode-interval', config.min_update_interval_seconds);
+  renderSlowModeTiers(config.tiers || []);
+}
+
+function renderSlowModeTiers(tiers) {
+  const container = document.getElementById('slowmode-tiers');
+  if (!container) return;
+  container.innerHTML = '';
+  const list = tiers.length ? tiers : cloneDefaultConfig().slow_mode.tiers;
+  list.forEach((tier) => addSlowModeTier(tier));
+}
+
+function addSlowModeTier(tier = { threshold: 10, seconds: 1 }) {
+  const container = document.getElementById('slowmode-tiers');
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'grid grid-cols-7 gap-2 items-end';
+  row.setAttribute('data-slow-tier', '');
+  row.innerHTML = `
+    <div class="col-span-3">
+      <label class="block text-xs text-muted">Seuil (msgs/min)</label>
+      <input type="number" class="input" min="1" value="${tier.threshold ?? ''}" data-threshold>
+    </div>
+    <div class="col-span-3">
+      <label class="block text-xs text-muted">Slowmode (s)</label>
+      <input type="number" class="input" min="0" value="${tier.seconds ?? ''}" data-seconds>
+    </div>
+    <div class="col-span-1 flex items-end">
+      <button class="btn-danger w-full text-sm" type="button" onclick="removeSlowModeTier(this)">Supprimer</button>
+    </div>
+  `;
+  container.appendChild(row);
+}
+
+function removeSlowModeTier(button) {
+  const container = document.getElementById('slowmode-tiers');
+  const row = button.closest('[data-slow-tier]');
+  if (row) row.remove();
+  if (container && container.querySelectorAll('[data-slow-tier]').length === 0) {
+    addSlowModeTier(cloneDefaultConfig().slow_mode.tiers[0]);
+  }
+}
+
+function collectSlowModeConfig(previous = cloneDefaultConfig().slow_mode) {
+  const config = { ...cloneDefaultConfig().slow_mode, ...previous };
+  const enabledInput = document.getElementById('slowmode-enabled');
+  const windowInput = document.getElementById('slowmode-window');
+  const intervalInput = document.getElementById('slowmode-interval');
+  if (enabledInput) config.enabled = enabledInput.checked;
+  if (windowInput && windowInput.value) config.window_seconds = Number(windowInput.value);
+  if (intervalInput && intervalInput.value) config.min_update_interval_seconds = Number(intervalInput.value);
+
+  const container = document.getElementById('slowmode-tiers');
+  if (container) {
+    const tiers = Array.from(container.querySelectorAll('[data-slow-tier]'))
+      .map((row) => ({
+        threshold: Number(row.querySelector('[data-threshold]')?.value ?? 0),
+        seconds: Number(row.querySelector('[data-seconds]')?.value ?? 0),
+      }))
+      .filter((tier) => tier.threshold > 0 && tier.seconds >= 0);
+    if (tiers.length) config.tiers = tiers;
+  }
+
+  return config;
+}
+
+function collectConfigPayload() {
+  const payload = { ...cloneDefaultConfig(), ...configState };
+  const assign = (id, setter) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    setter(el);
+  };
+
+  assign('config-prefix', (el) => {
+    payload.prefix = el.value || '!';
+  });
+  assign('config-language', (el) => {
+    payload.language = el.value || 'fr';
+  });
+  assign('config-timezone', (el) => {
+    payload.timezone = el.value || 'Europe/Brussels';
+  });
+  assign('config-auto-refresh', (el) => {
+    payload.auto_refresh = el.checked;
+  });
+  assign('config-notifications', (el) => {
+    payload.notifications = el.checked;
+  });
+  assign('config-page-size', (el) => {
+    payload.page_size = Number(el.value) || payload.page_size;
+  });
+  assign('config-log-level', (el) => {
+    payload.log_level = el.value || payload.log_level;
+  });
+  assign('config-retention', (el) => {
+    payload.retention_days = Number(el.value) || payload.retention_days;
+  });
+  assign('config-cleanup', (el) => {
+    payload.cleanup = el.checked;
+  });
+
+  payload.slow_mode = collectSlowModeConfig(payload.slow_mode);
+  return payload;
 }
 
 function exportLogs() { window.location = '/api/export/logs'; }

@@ -20,6 +20,31 @@
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
     <div class="card space-y-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Auto slow mode</h2>
+            <label class="switch"><input type="checkbox" id="slowmode-enabled"><span class="slider"></span></label>
+        </div>
+        <p class="text-sm text-muted">Ajustez automatiquement le slow mode en fonction du trafic. Vous gardez la main sur la configuration des paliers.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+                <label class="block text-sm text-muted">Fenêtre d'analyse (secondes)</label>
+                <input type="number" class="input" id="slowmode-window" min="10" value="60">
+            </div>
+            <div>
+                <label class="block text-sm text-muted">Intervalle minimum de mise à jour (secondes)</label>
+                <input type="number" class="input" id="slowmode-interval" min="5" value="15">
+            </div>
+        </div>
+        <div class="space-y-2">
+            <div class="flex items-center justify-between">
+                <span class="text-sm text-muted">Paliers (messages/minute → slow mode)</span>
+                <button class="btn-secondary text-sm" type="button" onclick="addSlowModeTier()">+ Ajouter un palier</button>
+            </div>
+            <div id="slowmode-tiers" class="space-y-2"></div>
+        </div>
+        <button class="btn-primary" type="button" onclick="saveSlowMode()">Sauvegarder l'auto slow mode</button>
+    </div>
+    <div class="card space-y-4">
         <h2 class="text-lg font-semibold">Purge de salon</h2>
         <label class="block text-sm text-muted">Salon</label>
         <select class="input" id="purge-channel"></select>
