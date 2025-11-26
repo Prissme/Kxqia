@@ -82,6 +82,18 @@ def init_db() -> None:
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS vote_bans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                target_user_id TEXT NOT NULL,
+                voter_user_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, target_user_id, voter_user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_vote_bans_guild_target ON vote_bans(guild_id, target_user_id);
+
             CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_logs_type ON logs(type);
             CREATE INDEX IF NOT EXISTS idx_moderation_timestamp ON moderation_actions(timestamp DESC);
@@ -140,6 +152,29 @@ def load_config() -> Config:
     return Config.from_mapping(mapping)
 
 
+def get_trust_levels() -> dict[str, str]:
+    """Retrieve all trust levels from the stored configuration."""
+    config = load_config()
+    return config.to_dict().get('trust_levels', {}) or {}
+
+
+def set_trust_level(user_id: str, level: str) -> None:
+    """Persist a trust level for a given user."""
+    config = load_config()
+    data = config.to_dict()
+    data.setdefault('trust_levels', {})[user_id] = level
+    save_config(Config.from_mapping(data))
+
+
+def remove_trust_level(user_id: str) -> None:
+    """Remove a stored trust level for a user if present."""
+    config = load_config()
+    data = config.to_dict()
+    if 'trust_levels' in data and user_id in data['trust_levels']:
+        del data['trust_levels'][user_id]
+        save_config(Config.from_mapping(data))
+
+
 def _decode(value: str) -> Any:
     try:
         return json.loads(value)
@@ -191,6 +226,84 @@ def count_user_messages(user_id: str, guild_id: Optional[str] = None) -> int:
     with get_connection() as conn:
         row = conn.execute(query, params).fetchone()
     return int(row[0] or 0)
+
+
+def add_vote_ban(guild_id: str, target_user_id: str, voter_user_id: str, reason: str) -> bool:
+    """Persist a voteban entry; returns True if inserted, False on duplicate."""
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO vote_bans(guild_id, target_user_id, voter_user_id, reason)
+                VALUES (?, ?, ?, ?)
+                """,
+                (guild_id, target_user_id, voter_user_id, reason),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_vote_bans(guild_id: str, target_user_id: str, days: int = 7) -> list[dict[str, Any]]:
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT guild_id, target_user_id, voter_user_id, reason, created_at
+            FROM vote_bans
+            WHERE guild_id = ? AND target_user_id = ? AND created_at >= ?
+            ORDER BY created_at DESC
+            """,
+            (guild_id, target_user_id, cutoff.isoformat()),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_user_daily_votes(guild_id: str, voter_id: str) -> int:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT target_user_id) as total
+            FROM vote_bans
+            WHERE guild_id = ? AND voter_user_id = ? AND DATE(created_at) = DATE('now')
+            """,
+            (guild_id, voter_id),
+        ).fetchone()
+    return int(row['total'] or 0)
+
+
+def clear_vote_bans(guild_id: str, target_user_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM vote_bans WHERE guild_id = ? AND target_user_id = ?",
+            (guild_id, target_user_id),
+        )
+
+
+def cleanup_old_votes(days: int = 30) -> None:
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    with get_connection() as conn:
+        conn.execute("DELETE FROM vote_bans WHERE created_at < ?", (cutoff.isoformat(),))
+
+
+def get_last_voteban_sanction(guild_id: str, target_user_id: str) -> Optional[datetime]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(timestamp) as ts
+            FROM moderation_actions
+            WHERE (guild_id = ? OR guild_id IS NULL)
+              AND action_type IN ('voteban','votemute')
+              AND details LIKE ?
+            """,
+            (guild_id, f'%"target_id": "{target_user_id}"%'),
+        ).fetchone()
+    if not row or not row['ts']:
+        return None
+    try:
+        return datetime.fromisoformat(row['ts'])
+    except Exception:
+        return None
 
 
 def get_chart_data(days: int = 7) -> dict[str, list[dict[str, str | int]]]:

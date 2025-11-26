@@ -1,0 +1,110 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card mb-6">
+    <h2 class="text-2xl font-bold mb-4">🔐 Whitelist / Trust Levels</h2>
+    <p class="text-muted mb-4">Gérez les utilisateurs de confiance exemptés des protections anti-nuke.</p>
+    
+    <div class="mb-6">
+        <h3 class="text-lg font-semibold mb-3">Ajouter un utilisateur</h3>
+        <div class="flex gap-3">
+            <input type="text" id="new-user-id" class="input" placeholder="ID utilisateur Discord">
+            <select id="new-trust-level" class="input">
+                <option value="TRUSTED_ADMIN">Trusted Admin</option>
+                <option value="NORMAL_ADMIN">Normal Admin</option>
+                <option value="DEFAULT_USER">User</option>
+            </select>
+            <button class="btn-primary" onclick="addTrustLevel()">Ajouter</button>
+        </div>
+    </div>
+    
+    <div class="overflow-x-auto">
+        <table class="table-auto w-full">
+            <thead>
+                <tr>
+                    <th class="th">Utilisateur</th>
+                    <th class="th">ID</th>
+                    <th class="th">Niveau</th>
+                    <th class="th">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="whitelist-table"></tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <h2 class="text-2xl font-bold mb-4">⚙️ Configuration Anti-Nuke</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+            <label class="text-sm text-muted">Limite suppressions channels</label>
+            <input type="number" class="input" id="nuke-channel-limit" value="3">
+        </div>
+        <div>
+            <label class="text-sm text-muted">Limite suppressions rôles</label>
+            <input type="number" class="input" id="nuke-role-limit" value="5">
+        </div>
+        <div>
+            <label class="text-sm text-muted">Limite bans</label>
+            <input type="number" class="input" id="nuke-ban-limit" value="10">
+        </div>
+        <div>
+            <label class="text-sm text-muted">Fenêtre de temps (secondes)</label>
+            <input type="number" class="input" id="nuke-time-window" value="30">
+        </div>
+    </div>
+    <button class="btn-primary mt-4" onclick="saveNukeConfig()">Sauvegarder</button>
+</div>
+
+<script>
+async function loadWhitelist() {
+    const data = await fetchJSON('/api/whitelist');
+    const tbody = document.getElementById('whitelist-table');
+    tbody.innerHTML = '';
+    data.forEach(user => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td class="px-3 py-2">${user.username}</td>
+            <td class="px-3 py-2">${user.user_id}</td>
+            <td class="px-3 py-2"><span class="badge">${user.level}</span></td>
+            <td class="px-3 py-2">
+                <button class="btn-danger text-sm" onclick="removeTrustLevel('${user.user_id}')">Retirer</button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+async function addTrustLevel() {
+    const userId = document.getElementById('new-user-id').value;
+    const level = document.getElementById('new-trust-level').value;
+    await fetch('/api/whitelist', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({user_id: userId, level: level})
+    });
+    loadWhitelist();
+}
+
+async function removeTrustLevel(userId) {
+    await fetch(`/api/whitelist/${userId}`, {method: 'DELETE'});
+    loadWhitelist();
+}
+
+async function saveNukeConfig() {
+    const cfg = await fetchJSON('/api/config');
+    cfg.nuke = cfg.nuke || {};
+    cfg.nuke.channelDeleteLimit = Number(document.getElementById('nuke-channel-limit').value);
+    cfg.nuke.roleDeleteLimit = Number(document.getElementById('nuke-role-limit').value);
+    cfg.nuke.banLimit = Number(document.getElementById('nuke-ban-limit').value);
+    cfg.nuke.timeWindow = Number(document.getElementById('nuke-time-window').value);
+    await fetch('/api/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(cfg)
+    });
+    toast('Configuration enregistrée');
+}
+
+window.addEventListener('DOMContentLoaded', loadWhitelist);
+</script>
+{% endblock %}
