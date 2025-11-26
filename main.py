@@ -1,9 +1,10 @@
+import asyncio
 import datetime
 import json
 import logging
 import os
 import threading
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -40,6 +41,9 @@ socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
 start_time = datetime.datetime.utcnow()
 
+vote_ban_votes: dict[int, dict[int, dict[int, str]]] = defaultdict(lambda: defaultdict(dict))
+vote_ban_tokens: dict[int, dict[int, float]] = defaultdict(dict)
+
 # --- Database initialization
 db.init_db()
 config = db.load_config()
@@ -51,6 +55,91 @@ def uptime() -> str:
     hours, remainder = divmod(remainder, 3600)
     minutes, _ = divmod(remainder, 60)
     return f"{int(days)}d {int(hours)}h {int(minutes)}m"
+
+
+def _can_user_vote(member: discord.Member) -> tuple[bool, str]:
+    age = datetime.datetime.utcnow() - member.created_at.replace(tzinfo=None)
+    if age < datetime.timedelta(days=14):
+        return False, "Votre compte doit avoir au moins 14 jours pour voter."
+
+    total_messages = db.count_user_messages(str(member.id), str(member.guild.id))
+    if total_messages < 100:
+        return False, f"Vous devez avoir envoyé au moins 100 messages sur le serveur (actuel: {total_messages})."
+
+    return True, str(total_messages)
+
+
+async def _schedule_vote_unban(guild: discord.Guild, user_id: int, minutes: int, token: float) -> None:
+    await asyncio.sleep(minutes * 60)
+    if vote_ban_tokens[guild.id].get(user_id) != token:
+        return
+    try:
+        await guild.unban(discord.Object(id=user_id), reason="Fin du bannissement voté")
+    except discord.NotFound:
+        return
+    except discord.HTTPException:
+        return
+
+
+async def _apply_vote_ban(
+    ctx: commands.Context,
+    member: discord.Member,
+    total_votes: int,
+    duration_minutes: Optional[int],
+    vote_reason: str,
+) -> Optional[str]:
+    ban_reason = f"Bannissement voté ({total_votes} votes) - {vote_reason}"
+    try:
+        await ctx.guild.ban(member, reason=ban_reason, delete_message_days=0)
+    except discord.Forbidden:
+        await ctx.send("Je n'ai pas la permission de bannir cet utilisateur.")
+        return None
+    except discord.HTTPException:
+        await ctx.send("Impossible de bannir cet utilisateur pour le moment.")
+        return None
+
+    db.add_moderation_action(
+        'voteban',
+        str(ctx.channel.id),
+        ctx.channel.name,
+        str(ctx.author.id),
+        str(ctx.author),
+        vote_reason,
+        {
+            'target_id': str(member.id),
+            'target_name': str(member),
+            'votes': total_votes,
+            'duration_minutes': duration_minutes,
+        },
+    )
+    db.log_event(
+        'moderation',
+        'warning',
+        'Bannissement par vote appliqué',
+        user_id=str(ctx.author.id),
+        user_name=str(ctx.author),
+        channel_id=str(ctx.channel.id),
+        guild_id=str(ctx.guild.id),
+        metadata={
+            'target_id': str(member.id),
+            'target_name': str(member),
+            'votes': total_votes,
+            'duration_minutes': duration_minutes,
+        },
+    )
+
+    if duration_minutes is None:
+        vote_ban_tokens[ctx.guild.id].pop(member.id, None)
+        vote_ban_votes[ctx.guild.id].pop(member.id, None)
+        return f"🚫 {member.mention} est banni définitivement (4 votes)."
+
+    token = datetime.datetime.utcnow().timestamp()
+    vote_ban_tokens[ctx.guild.id][member.id] = token
+    bot.loop.create_task(_schedule_vote_unban(ctx.guild, member.id, duration_minutes, token))
+
+    if duration_minutes >= 1440:
+        return f"⏳ {member.mention} est banni pour 24 heures (3 votes)."
+    return f"⏳ {member.mention} est banni pour 10 minutes (2 votes)."
 
 
 # --- Discord helpers
@@ -176,7 +265,8 @@ async def help_command(ctx: commands.Context):
         description=(
             '**Modération:**\n'
             '`/purge` - Nettoyer et verrouiller un salon\n'
-            '`/unpurge` - Rouvrir un salon verrouillé\n\n'
+            '`/unpurge` - Rouvrir un salon verrouillé\n'
+            '`!voteban` - Lancer un vote de bannissement avec raison\n\n'
             '**Analytics:**\n'
             '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
             '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
@@ -191,6 +281,82 @@ async def help_command(ctx: commands.Context):
 @bot.command(name='ping')
 async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
+
+
+@bot.command(name='voteban')
+async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    if reason is None or not reason.strip():
+        await ctx.send("Merci de fournir une raison : `!voteban @membre <raison>`.")
+        return
+
+    if member.bot:
+        await ctx.send("Impossible de voter pour bannir un bot.")
+        return
+
+    if member == ctx.author:
+        await ctx.send("Vous ne pouvez pas voter contre vous-même.")
+        return
+
+    can_vote, detail = _can_user_vote(ctx.author)
+    if not can_vote:
+        await ctx.send(detail)
+        return
+
+    guild_votes = vote_ban_votes[ctx.guild.id][member.id]
+    if ctx.author.id in guild_votes:
+        await ctx.send("Vous avez déjà voté pour ce bannissement.")
+        return
+
+    cleaned_reason = reason.strip()
+    guild_votes[ctx.author.id] = cleaned_reason
+    total_votes = len(guild_votes)
+
+    db.log_event(
+        'moderation',
+        'info',
+        'Vote de bannissement enregistré',
+        user_id=str(ctx.author.id),
+        user_name=str(ctx.author),
+        channel_id=str(ctx.channel.id),
+        guild_id=str(ctx.guild.id),
+        metadata={
+            'target_id': str(member.id),
+            'target_name': str(member),
+            'votes': total_votes,
+            'reason': cleaned_reason,
+        },
+    )
+
+    status_lines = [
+        f'🗳️ {ctx.author.mention} a voté pour bannir {member.mention} ({total_votes}/4).',
+        f'Raison : {cleaned_reason}',
+        'Seuils : 2 votes = 10 min, 3 votes = 24h, 4 votes = définitif.'
+    ]
+
+    action_feedback: Optional[str] = None
+    if total_votes >= 4:
+        action_feedback = await _apply_vote_ban(ctx, member, total_votes, None, cleaned_reason)
+    elif total_votes == 3:
+        action_feedback = await _apply_vote_ban(ctx, member, total_votes, 1440, cleaned_reason)
+    elif total_votes == 2:
+        action_feedback = await _apply_vote_ban(ctx, member, total_votes, 10, cleaned_reason)
+
+    if action_feedback:
+        status_lines.append(action_feedback)
+    else:
+        status_lines.append("Aucune sanction appliquée pour le moment.")
+
+    reasons_list = '\n'.join(
+        f"- {ctx.guild.get_member(user_id).mention if ctx.guild.get_member(user_id) else user_id}: {vote_reason}"
+        for user_id, vote_reason in guild_votes.items()
+    )
+    status_lines.append('Votes actuels :\n' + reasons_list)
+
+    await ctx.send('\n'.join(status_lines))
 
 
 def _pcsd_main_embed() -> discord.Embed:
