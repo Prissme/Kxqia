@@ -5,7 +5,7 @@ import sqlite3
 import logging
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from database.models import Config
 
@@ -179,6 +179,18 @@ def record_daily_stats(
                 commands_used,
             ),
         )
+
+
+def count_user_messages(user_id: str, guild_id: Optional[str] = None) -> int:
+    """Return how many messages a user has sent, optionally scoped to a guild."""
+    query = "SELECT COUNT(*) FROM logs WHERE type='message' AND user_id=?"
+    params: list[str] = [user_id]
+    if guild_id:
+        query += " AND guild_id=?"
+        params.append(guild_id)
+    with get_connection() as conn:
+        row = conn.execute(query, params).fetchone()
+    return int(row[0] or 0)
 
 
 def get_chart_data(days: int = 7) -> dict[str, list[dict[str, str | int]]]:
