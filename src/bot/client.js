@@ -12,7 +12,8 @@ export function createClient(logger) {
       GatewayIntentBits.GuildBans,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.GuildPresences,
-      GatewayIntentBits.GuildWebhooks
+      GatewayIntentBits.GuildWebhooks,
+      GatewayIntentBits.MessageContent
     ],
     partials: [Partials.GuildMember]
   });

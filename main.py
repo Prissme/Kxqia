@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import json
 import logging
@@ -42,7 +41,6 @@ socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 start_time = datetime.datetime.utcnow()
 
 vote_ban_votes: dict[int, dict[int, dict[int, str]]] = defaultdict(lambda: defaultdict(dict))
-vote_ban_tokens: dict[int, dict[int, float]] = defaultdict(dict)
 
 # --- Database initialization
 db.init_db()
@@ -69,37 +67,83 @@ def _can_user_vote(member: discord.Member) -> tuple[bool, str]:
     return True, str(total_messages)
 
 
-async def _schedule_vote_unban(guild: discord.Guild, user_id: int, minutes: int, token: float) -> None:
-    await asyncio.sleep(minutes * 60)
-    if vote_ban_tokens[guild.id].get(user_id) != token:
-        return
-    try:
-        await guild.unban(discord.Object(id=user_id), reason="Fin du bannissement voté")
-    except discord.NotFound:
-        return
-    except discord.HTTPException:
-        return
-
-
-async def _apply_vote_ban(
+async def _apply_vote_action(
     ctx: commands.Context,
     member: discord.Member,
     total_votes: int,
-    duration_minutes: Optional[int],
     vote_reason: str,
 ) -> Optional[str]:
-    ban_reason = f"Bannissement voté ({total_votes} votes) - {vote_reason}"
+    thresholds: list[tuple[int, Optional[int]]] = [
+        (20, None),  # ban définitif
+        (5, 120),  # mute 2h
+        (2, 10),  # mute 10 minutes
+    ]
+
+    target_threshold: Optional[tuple[int, Optional[int]]] = None
+    for threshold, minutes in thresholds:
+        if total_votes >= threshold:
+            target_threshold = (threshold, minutes)
+            break
+
+    if target_threshold is None:
+        return None
+
+    threshold, duration_minutes = target_threshold
+    action_reason = f"Sanction votée ({total_votes} votes) - {vote_reason}"
+
+    if duration_minutes is None:
+        try:
+            await ctx.guild.ban(member, reason=action_reason, delete_message_days=0)
+        except discord.Forbidden:
+            await ctx.send("Je n'ai pas la permission de bannir cet utilisateur.")
+            return None
+        except discord.HTTPException:
+            await ctx.send("Impossible de bannir cet utilisateur pour le moment.")
+            return None
+
+        db.add_moderation_action(
+            'voteban',
+            str(ctx.channel.id),
+            ctx.channel.name,
+            str(ctx.author.id),
+            str(ctx.author),
+            vote_reason,
+            {
+                'target_id': str(member.id),
+                'target_name': str(member),
+                'votes': total_votes,
+                'duration_minutes': duration_minutes,
+            },
+        )
+        db.log_event(
+            'moderation',
+            'warning',
+            'Bannissement par vote appliqué',
+            user_id=str(ctx.author.id),
+            user_name=str(ctx.author),
+            channel_id=str(ctx.channel.id),
+            guild_id=str(ctx.guild.id),
+            metadata={
+                'target_id': str(member.id),
+                'target_name': str(member),
+                'votes': total_votes,
+                'duration_minutes': duration_minutes,
+            },
+        )
+        vote_ban_votes[ctx.guild.id].pop(member.id, None)
+        return f"🚫 {member.mention} est banni définitivement ({threshold} votes)."
+
     try:
-        await ctx.guild.ban(member, reason=ban_reason, delete_message_days=0)
+        await member.timeout(datetime.timedelta(minutes=duration_minutes), reason=action_reason)
     except discord.Forbidden:
-        await ctx.send("Je n'ai pas la permission de bannir cet utilisateur.")
+        await ctx.send("Je n'ai pas la permission de réduire cet utilisateur au silence.")
         return None
     except discord.HTTPException:
-        await ctx.send("Impossible de bannir cet utilisateur pour le moment.")
+        await ctx.send("Impossible d'appliquer le mute voté pour le moment.")
         return None
 
     db.add_moderation_action(
-        'voteban',
+        'votemute',
         str(ctx.channel.id),
         ctx.channel.name,
         str(ctx.author.id),
@@ -115,7 +159,7 @@ async def _apply_vote_ban(
     db.log_event(
         'moderation',
         'warning',
-        'Bannissement par vote appliqué',
+        'Mute par vote appliqué',
         user_id=str(ctx.author.id),
         user_name=str(ctx.author),
         channel_id=str(ctx.channel.id),
@@ -128,18 +172,7 @@ async def _apply_vote_ban(
         },
     )
 
-    if duration_minutes is None:
-        vote_ban_tokens[ctx.guild.id].pop(member.id, None)
-        vote_ban_votes[ctx.guild.id].pop(member.id, None)
-        return f"🚫 {member.mention} est banni définitivement (4 votes)."
-
-    token = datetime.datetime.utcnow().timestamp()
-    vote_ban_tokens[ctx.guild.id][member.id] = token
-    bot.loop.create_task(_schedule_vote_unban(ctx.guild, member.id, duration_minutes, token))
-
-    if duration_minutes >= 1440:
-        return f"⏳ {member.mention} est banni pour 24 heures (3 votes)."
-    return f"⏳ {member.mention} est banni pour 10 minutes (2 votes)."
+    return f"🔇 {member.mention} est mute pour {duration_minutes} minutes ({threshold} votes)."
 
 
 # --- Discord helpers
@@ -332,18 +365,12 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
     )
 
     status_lines = [
-        f'🗳️ {ctx.author.mention} a voté pour bannir {member.mention} ({total_votes}/4).',
+        f'🗳️ {ctx.author.mention} a voté pour bannir {member.mention} ({total_votes}/20).',
         f'Raison : {cleaned_reason}',
-        'Seuils : 2 votes = 10 min, 3 votes = 24h, 4 votes = définitif.'
+        'Seuils : 2 votes = 10 min de mute, 5 votes = 2h de mute, 20 votes = ban définitif.'
     ]
 
-    action_feedback: Optional[str] = None
-    if total_votes >= 4:
-        action_feedback = await _apply_vote_ban(ctx, member, total_votes, None, cleaned_reason)
-    elif total_votes == 3:
-        action_feedback = await _apply_vote_ban(ctx, member, total_votes, 1440, cleaned_reason)
-    elif total_votes == 2:
-        action_feedback = await _apply_vote_ban(ctx, member, total_votes, 10, cleaned_reason)
+    action_feedback = await _apply_vote_action(ctx, member, total_votes, cleaned_reason)
 
     if action_feedback:
         status_lines.append(action_feedback)
