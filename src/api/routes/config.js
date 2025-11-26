@@ -13,6 +13,18 @@ const raidSchema = z.object({
   quarantineRoleId: z.string().optional()
 });
 
+const slowModeTierSchema = z.object({
+  threshold: z.number().min(1).max(500),
+  seconds: z.number().int().min(0).max(21600)
+});
+
+const slowModeSchema = z.object({
+  enabled: z.boolean(),
+  windowSeconds: z.number().int().min(10).max(600),
+  minUpdateIntervalSeconds: z.number().int().min(5).max(600),
+  tiers: z.array(slowModeTierSchema).nonempty()
+});
+
 const nukeSchema = z.object({
   channelDeleteLimit: z.number().int().min(1).max(50),
   roleDeleteLimit: z.number().int().min(1).max(50),
@@ -25,6 +37,7 @@ const nukeSchema = z.object({
 
 const configSchema = z.object({
   logChannelId: z.string().optional(),
+  slowMode: slowModeSchema,
   raid: raidSchema,
   nuke: nukeSchema
 });

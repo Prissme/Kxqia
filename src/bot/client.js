@@ -1,6 +1,7 @@
 import { Client, GatewayIntentBits, Partials, Collection, REST, Routes, SlashCommandBuilder } from "discord.js";
 import { AntiRaid } from "./security/antiRaid.js";
 import { AntiNuke } from "./security/antiNuke.js";
+import { SlowModeManager } from "./security/slowMode.js";
 import { getConfig } from "../db/database.js";
 
 export function createClient(logger) {
@@ -18,7 +19,8 @@ export function createClient(logger) {
 
   client.security = {
     antiRaid: new AntiRaid(client, logger),
-    antiNuke: new AntiNuke(client, logger)
+    antiNuke: new AntiNuke(client, logger),
+    slowMode: new SlowModeManager(logger)
   };
 
   client.commands = new Collection();
