@@ -2,7 +2,24 @@ import fs from "fs";
 import path from "path";
 import defaultConfig from "../../config/defaultConfig.js";
 
-const dataPath = path.join(process.cwd(), "data", "data.json");
+function resolveDataPath() {
+  if (process.env.DATA_PATH) return process.env.DATA_PATH;
+
+  const persistentDir = path.join(path.sep, "data");
+  try {
+    fs.mkdirSync(persistentDir, { recursive: true });
+    fs.accessSync(persistentDir, fs.constants.W_OK);
+    return path.join(persistentDir, "data.json");
+  } catch {
+    // ignore and fallback below
+  }
+
+  const fallbackDir = path.join(process.cwd(), "data");
+  fs.mkdirSync(fallbackDir, { recursive: true });
+  return path.join(fallbackDir, "data.json");
+}
+
+const dataPath = resolveDataPath();
 
 const defaultData = {
   config: defaultConfig,
