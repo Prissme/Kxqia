@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.utils import escape_mentions
 from flask import Flask, jsonify, render_template, request, send_file
 from flask_socketio import SocketIO
 
@@ -36,6 +37,7 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 bot_status = {'ready': False}
+STAFF_ROLE_ID = 1236738451018223768
 
 # --- Flask + SocketIO
 app = Flask(__name__, template_folder='dashboard/templates', static_folder='dashboard/static')
@@ -200,6 +202,51 @@ async def _apply_vote_action(
     return f"🔇 {member.mention} est mute pour {duration_minutes} minutes ({threshold} votes)."
 
 
+async def _refresh_staff_role(guild: discord.Guild) -> str:
+    role = guild.get_role(STAFF_ROLE_ID)
+    if role is None:
+        return "Rôle staff introuvable sur ce serveur."
+
+    totals = db.get_staff_vote_totals(str(guild.id))
+    if not totals:
+        return "Aucun vote enregistré pour le moment."
+
+    top_count = totals[0]['total']
+    leaders = [row for row in totals if row['total'] == top_count]
+    if len(leaders) != 1:
+        return "Égalité pour la première place, aucun changement appliqué."
+
+    winner_id = int(leaders[0]['target_user_id'])
+    winner_member = guild.get_member(winner_id)
+    if winner_member is None:
+        return "Le membre en tête n'est plus présent sur le serveur."
+
+    changes: list[str] = []
+    if role not in winner_member.roles:
+        try:
+            await winner_member.add_roles(role, reason="Attribué via vote staff")
+            changes.append(f"{winner_member.display_name} reçoit le rôle staff.")
+        except discord.Forbidden:
+            return "Permissions insuffisantes pour attribuer le rôle staff."
+        except discord.HTTPException:
+            return "Impossible d'attribuer le rôle staff pour le moment."
+
+    for member in list(role.members):
+        if member.id == winner_id:
+            continue
+        try:
+            await member.remove_roles(role, reason="Rôle staff réattribué via vote")
+            changes.append(f"{member.display_name} perd le rôle staff.")
+        except discord.Forbidden:
+            return "Permissions insuffisantes pour retirer le rôle staff à certains membres."
+        except discord.HTTPException:
+            return "Impossible de mettre à jour les rôles staff pour le moment."
+
+    if changes:
+        return " ".join(changes)
+    return f"{winner_member.display_name} reste en tête avec {top_count} voix."
+
+
 # --- Discord helpers
 
 def _iter_message_channels(guild: discord.Guild) -> Iterable[discord.abc.Messageable]:
@@ -351,7 +398,8 @@ async def help_command(ctx: commands.Context):
             '**Modération:**\n'
             '`/purge` - Nettoyer et verrouiller un salon\n'
             '`/unpurge` - Rouvrir un salon verrouillé\n'
-            '`!voteban` - Lancer un vote de bannissement avec raison\n\n'
+            '`!voteban` - Lancer un vote de bannissement avec raison\n'
+            '`!votestaff` - Voter pour élire un membre du staff\n\n'
             '**Analytics:**\n'
             '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
             '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
@@ -405,7 +453,7 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
         await ctx.send("Limite de 3 votes par jour atteinte.")
         return
 
-    cleaned_reason = reason.strip()
+    cleaned_reason = escape_mentions(reason).strip()
     inserted = db.add_vote_ban(str(ctx.guild.id), str(member.id), str(ctx.author.id), cleaned_reason)
     if not inserted:
         await ctx.send("Vous avez déjà voté pour ce bannissement.")
@@ -458,6 +506,79 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
     status_lines.append('Votes actuels :\n' + reasons_list)
 
     await ctx.send('\n'.join(status_lines))
+
+
+def _format_staff_leaderboard(guild: discord.Guild, totals: list[dict[str, int]]) -> str:
+    lines = []
+    for entry in totals[:5]:
+        target_member = guild.get_member(int(entry['target_user_id']))
+        label = target_member.mention if target_member else entry['target_user_id']
+        lines.append(f"- {label}: {entry['total']} voix")
+    return '\n'.join(lines)
+
+
+@bot.command(name='votestaff')
+async def votestaff(ctx: commands.Context, member: discord.Member):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    if member.bot:
+        await ctx.send("Impossible de voter pour un bot.")
+        return
+
+    if member == ctx.author:
+        await ctx.send("Vous ne pouvez pas voter pour vous-même.")
+        return
+
+    can_vote, detail = _can_user_vote(ctx.author)
+    if not can_vote:
+        await ctx.send(detail)
+        return
+
+    previous_vote = db.get_staff_vote_for_user(str(ctx.guild.id), str(ctx.author.id))
+    db.upsert_staff_vote(str(ctx.guild.id), str(member.id), str(ctx.author.id))
+
+    totals = db.get_staff_vote_totals(str(ctx.guild.id))
+    candidate_total = next(
+        (entry['total'] for entry in totals if entry['target_user_id'] == str(member.id)),
+        1,
+    )
+
+    db.log_event(
+        'moderation',
+        'info',
+        'Vote staff enregistré',
+        user_id=str(ctx.author.id),
+        user_name=str(ctx.author),
+        channel_id=str(ctx.channel.id),
+        guild_id=str(ctx.guild.id),
+        metadata={
+            'target_id': str(member.id),
+            'target_name': str(member),
+            'previous_vote': previous_vote,
+            'votes': candidate_total,
+        },
+    )
+
+    leaderboard = _format_staff_leaderboard(ctx.guild, totals)
+    refresh_feedback = await _refresh_staff_role(ctx.guild)
+
+    response_lines = [
+        f"🗳️ {ctx.author.mention} vote pour {member.mention} comme staff.",
+        f"Total pour {member.mention} : {candidate_total} voix.",
+    ]
+
+    if previous_vote and previous_vote != str(member.id):
+        response_lines.append("Votre vote précédent a été mis à jour.")
+    elif not previous_vote:
+        response_lines.append("C'est votre premier vote staff.")
+
+    if leaderboard:
+        response_lines.append('Classement actuel :\n' + leaderboard)
+
+    response_lines.append(refresh_feedback)
+    await ctx.send('\n'.join(response_lines))
 
 
 @bot.command(name='votestatus')
