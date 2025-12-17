@@ -404,7 +404,9 @@ async def help_command(ctx: commands.Context):
             '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
             '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
             '**Utilitaires:**\n'
-            '`!ping` - Vérifier la latence du bot'
+            '`!ping` - Vérifier la latence du bot\n'
+            '`!votes` - Voir le classement des votes staff\n'
+            '`!status` - Voir le détail des votes actifs contre un membre'
         ),
         color=0x5865F2
     )
@@ -517,6 +519,20 @@ def _format_staff_leaderboard(guild: discord.Guild, totals: list[dict[str, int]]
     return '\n'.join(lines)
 
 
+def _build_voteban_status_embed(guild: Optional[discord.Guild], target: discord.Member) -> Optional[discord.Embed]:
+    votes = db.get_vote_bans(str(guild.id), str(target.id)) if guild else []
+    if not votes:
+        return None
+
+    embed = discord.Embed(title=f"📊 Votes contre {target.display_name}", color=0x5865f2)
+    for i, vote in enumerate(votes[:10], 1):
+        voter = guild.get_member(int(vote['voter_user_id'])) if guild else None
+        voter_name = voter.mention if voter else f"<@{vote['voter_user_id']}>"
+        embed.add_field(name=f"Vote #{i}", value=f"{voter_name}\n*{vote['reason'][:100]}*", inline=False)
+    embed.set_footer(text=f"Total: {len(votes)} votes • Expiration: 7 jours")
+    return embed
+
+
 @bot.command(name='votestaff')
 async def votestaff(ctx: commands.Context, member: discord.Member):
     if ctx.guild is None:
@@ -584,17 +600,43 @@ async def votestaff(ctx: commands.Context, member: discord.Member):
 @bot.command(name='votestatus')
 async def votestatus(ctx: commands.Context, member: Optional[discord.Member] = None):
     target = member or ctx.author
-    votes = db.get_vote_bans(str(ctx.guild.id), str(target.id)) if ctx.guild else []
-    if not votes:
+    embed = _build_voteban_status_embed(ctx.guild, target)
+    if not embed:
         await ctx.send(f"Aucun vote actif contre {target.mention}.")
         return
 
-    embed = discord.Embed(title=f"📊 Votes contre {target.display_name}", color=0x5865f2)
-    for i, vote in enumerate(votes[:10], 1):
-        voter = ctx.guild.get_member(int(vote['voter_user_id'])) if ctx.guild else None
-        voter_name = voter.mention if voter else f"<@{vote['voter_user_id']}>"
-        embed.add_field(name=f"Vote #{i}", value=f"{voter_name}\n*{vote['reason'][:100]}*", inline=False)
-    embed.set_footer(text=f"Total: {len(votes)} votes • Expiration: 7 jours")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name='status')
+async def status(ctx: commands.Context, member: Optional[discord.Member] = None):
+    target = member or ctx.author
+    embed = _build_voteban_status_embed(ctx.guild, target)
+    if not embed:
+        await ctx.send(f"Aucun vote actif contre {target.mention}.")
+        return
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name='votes')
+async def votes(ctx: commands.Context):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    totals = db.get_staff_vote_totals(str(ctx.guild.id))
+    if not totals:
+        await ctx.send("Aucun vote staff enregistré pour le moment. Utilisez `!votestaff @membre` pour voter.")
+        return
+
+    embed = discord.Embed(title='🏅 Classement des votes staff', color=0x5865f2)
+    for rank, entry in enumerate(totals[:10], 1):
+        member = ctx.guild.get_member(int(entry['target_user_id']))
+        label = member.mention if member else f"<@{entry['target_user_id']}>"
+        embed.add_field(name=f"#{rank}", value=f"{label} — {entry['total']} voix", inline=False)
+
+    embed.set_footer(text=f"Total de voix comptabilisées : {sum(entry['total'] for entry in totals)}")
     await ctx.send(embed=embed)
 
 
