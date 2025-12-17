@@ -92,6 +92,18 @@ def init_db() -> None:
                 UNIQUE(guild_id, target_user_id, voter_user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS staff_votes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                target_user_id TEXT NOT NULL,
+                voter_user_id TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, voter_user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_staff_votes_guild ON staff_votes(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_staff_votes_target ON staff_votes(target_user_id);
+
             CREATE INDEX IF NOT EXISTS idx_vote_bans_guild_target ON vote_bans(guild_id, target_user_id);
 
             CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
@@ -304,6 +316,43 @@ def get_last_voteban_sanction(guild_id: str, target_user_id: str) -> Optional[da
         return datetime.fromisoformat(row['ts'])
     except Exception:
         return None
+
+
+def upsert_staff_vote(guild_id: str, target_user_id: str, voter_user_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO staff_votes (guild_id, target_user_id, voter_user_id)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id, voter_user_id)
+            DO UPDATE SET target_user_id=excluded.target_user_id, created_at=CURRENT_TIMESTAMP
+            """,
+            (guild_id, target_user_id, voter_user_id),
+        )
+
+
+def get_staff_vote_for_user(guild_id: str, voter_user_id: str) -> Optional[str]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT target_user_id FROM staff_votes WHERE guild_id = ? AND voter_user_id = ?",
+            (guild_id, voter_user_id),
+        ).fetchone()
+    return row['target_user_id'] if row else None
+
+
+def get_staff_vote_totals(guild_id: str) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT target_user_id, COUNT(*) as total
+            FROM staff_votes
+            WHERE guild_id = ?
+            GROUP BY target_user_id
+            ORDER BY total DESC, MAX(created_at) DESC
+            """,
+            (guild_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_chart_data(days: int = 7) -> dict[str, list[dict[str, str | int]]]:
