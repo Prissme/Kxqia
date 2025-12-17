@@ -580,21 +580,24 @@ async def votestaff(ctx: commands.Context, member: discord.Member):
     leaderboard = _format_staff_leaderboard(ctx.guild, totals)
     refresh_feedback = await _refresh_staff_role(ctx.guild)
 
-    response_lines = [
-        f"🗳️ {ctx.author.mention} vote pour {member.mention} comme staff.",
-        f"Total pour {member.mention} : {candidate_total} voix.",
-    ]
+    embed = discord.Embed(title="🗳️ Vote staff", color=0x5865f2)
+    embed.description = f"{ctx.author.mention} vote pour {member.mention} comme staff."
+    embed.add_field(
+        name="Total pour le candidat",
+        value=f"{candidate_total} voix",
+        inline=False,
+    )
 
     if previous_vote and previous_vote != str(member.id):
-        response_lines.append("Votre vote précédent a été mis à jour.")
+        embed.add_field(name="Mise à jour", value="Votre vote précédent a été mis à jour.", inline=False)
     elif not previous_vote:
-        response_lines.append("C'est votre premier vote staff.")
+        embed.add_field(name="Premier vote", value="C'est votre premier vote staff.", inline=False)
 
     if leaderboard:
-        response_lines.append('Classement actuel :\n' + leaderboard)
+        embed.add_field(name="Classement actuel", value=leaderboard, inline=False)
 
-    response_lines.append(refresh_feedback)
-    await ctx.send('\n'.join(response_lines))
+    embed.set_footer(text=refresh_feedback)
+    await ctx.send(embed=embed)
 
 
 @bot.command(name='votestatus')
