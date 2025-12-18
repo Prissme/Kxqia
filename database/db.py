@@ -1,6 +1,9 @@
-"""Supabase-based persistence layer."""
+"""Supabase-based persistence layer with in-memory batching."""
+import asyncio
 import json
 import logging
+import os
+from collections import defaultdict, deque
 from datetime import datetime, date, timedelta
 from typing import Any, Iterable, Optional
 
@@ -8,6 +11,121 @@ from database.supabase_client import get_supabase, test_connection
 from database.models import Config
 
 logger = logging.getLogger(__name__)
+
+
+class BatchLogger:
+    """Accumulate logs in memory and flush in bulk to Supabase."""
+
+    def __init__(self, batch_size: int = 100) -> None:
+        self.batch_size = batch_size
+        self.queue: deque[dict[str, Any]] = deque()
+        self._lock = asyncio.Lock()
+        self.total_enqueued = 0
+        self.total_flushed = 0
+        self.failed_flushes = 0
+
+    async def log(self, payload: dict[str, Any]) -> None:
+        """Queue a log payload and trigger flush if needed."""
+
+        async with self._lock:
+            self.queue.append(payload)
+            self.total_enqueued += 1
+            if len(self.queue) >= self.batch_size:
+                await self._flush_locked()
+
+    def log_nowait(self, payload: dict[str, Any]) -> None:
+        """Non-blocking enqueue from sync or async contexts."""
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.log(payload))
+        except RuntimeError:
+            asyncio.run(self.log(payload))
+
+    async def flush(self) -> int:
+        """Flush queued logs as a bulk insert."""
+
+        async with self._lock:
+            return await self._flush_locked()
+
+    async def _flush_locked(self) -> int:
+        if not self.queue:
+            return 0
+        batch = list(self.queue)
+        self.queue.clear()
+        try:
+            inserted = bulk_insert_logs(batch)
+            self.total_flushed += inserted
+            return inserted
+        except Exception as exc:  # pragma: no cover - defensive
+            self.failed_flushes += 1
+            logger.error("Erreur lors du flush des logs: %s", exc)
+            # ré-insère les logs pour éviter la perte de données
+            self.queue.extendleft(reversed(batch))
+            return 0
+
+
+class StatsCache:
+    """In-memory aggregator for daily stats before batch upsert."""
+
+    def __init__(self) -> None:
+        self.cache: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        self.members_total: dict[tuple[str, str], int] = {}
+        self._lock = asyncio.Lock()
+        self.flush_count = 0
+
+    def increment(
+        self,
+        *,
+        date_value: date,
+        guild_id: str,
+        members_total: int,
+        messages_sent: int = 0,
+        commands_used: int = 0,
+        members_joined: int = 0,
+        members_left: int = 0,
+    ) -> None:
+        key = (date_value.isoformat(), guild_id)
+        self.members_total[key] = members_total
+        bucket = self.cache[key]
+        bucket["messages_sent"] += messages_sent
+        bucket["commands_used"] += commands_used
+        bucket["members_joined"] += members_joined
+        bucket["members_left"] += members_left
+
+    async def flush(self) -> int:
+        async with self._lock:
+            if not self.cache:
+                return 0
+            payload = []
+            for (date_str, guild_id), counters in self.cache.items():
+                payload.append(
+                    {
+                        "date": date_str,
+                        "guild_id": guild_id,
+                        "members_total": self.members_total.get((date_str, guild_id), 0),
+                        "members_joined": counters.get("members_joined", 0),
+                        "members_left": counters.get("members_left", 0),
+                        "messages_sent": counters.get("messages_sent", 0),
+                        "commands_used": counters.get("commands_used", 0),
+                    }
+                )
+
+            try:
+                client = _ensure_client()
+                if not client:
+                    return 0
+                client.table("daily_stats").upsert(payload, on_conflict="date,guild_id").execute()
+                self.flush_count += 1
+                return len(payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("Erreur lors du flush des stats: %s", exc)
+                return 0
+
+
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "200"))
+batch_logger = BatchLogger(batch_size=BATCH_SIZE)
+stats_cache = StatsCache()
 
 
 def init_db() -> None:
@@ -26,9 +144,6 @@ def _ensure_client():
 # SECTION 1 - LOGS
 
 def log_event(event_type: str, level: str, message: str, **metadata: Any) -> None:
-    client = _ensure_client()
-    if not client:
-        return
     payload = {
         "type": event_type,
         "level": level,
@@ -39,10 +154,7 @@ def log_event(event_type: str, level: str, message: str, **metadata: Any) -> Non
         "guild_id": metadata.get("guild_id"),
         "metadata": metadata or {},
     }
-    try:
-        client.table("logs").insert(payload).execute()
-    except Exception as exc:
-        logger.error("Erreur log_event: %s", exc)
+    batch_logger.log_nowait(payload)
 
 
 def get_logs(filters: dict[str, Any]) -> dict[str, Any]:
@@ -87,6 +199,18 @@ def _count_logs(client, level: Optional[str] = None, type_filter: Optional[str] 
     except Exception as exc:
         logger.error("Erreur _count_logs: %s", exc)
         return 0
+
+
+def bulk_insert_logs(payloads: list[dict[str, Any]]) -> int:
+    """Insert a batch of logs in a single Supabase call."""
+
+    if not payloads:
+        return 0
+    client = _ensure_client()
+    if not client:
+        return 0
+    response = client.table("logs").insert(payloads).execute()
+    return len(response.data or payloads)
 
 
 # SECTION 2 - MODERATION
@@ -151,32 +275,15 @@ def record_daily_stats(
     members_joined: int = 0,
     members_left: int = 0,
 ) -> None:
-    client = _ensure_client()
-    if not client:
-        return
-
-    try:
-        existing_resp = (
-            client.table("daily_stats")
-            .select("*")
-            .eq("date", date_value.isoformat())
-            .eq("guild_id", guild_id)
-            .limit(1)
-            .execute()
-        )
-        existing = existing_resp.data[0] if existing_resp.data else {}
-        payload = {
-            "date": date_value.isoformat(),
-            "guild_id": guild_id,
-            "members_total": members_total,
-            "members_joined": (existing.get("members_joined") or 0) + members_joined,
-            "members_left": (existing.get("members_left") or 0) + members_left,
-            "messages_sent": (existing.get("messages_sent") or 0) + messages_sent,
-            "commands_used": (existing.get("commands_used") or 0) + commands_used,
-        }
-        client.table("daily_stats").upsert(payload, on_conflict="date,guild_id").execute()
-    except Exception as exc:
-        logger.error("Erreur record_daily_stats: %s", exc)
+    stats_cache.increment(
+        date_value=date_value,
+        guild_id=guild_id,
+        members_total=members_total,
+        messages_sent=messages_sent,
+        commands_used=commands_used,
+        members_joined=members_joined,
+        members_left=members_left,
+    )
 
 
 def get_chart_data(days: int = 7) -> dict[str, list[dict[str, str | int]]]:
@@ -519,6 +626,12 @@ def save_config(config: Config) -> None:
         client.table("config").upsert(payload, on_conflict="key").execute()
     except Exception as exc:
         logger.error("Erreur save_config: %s", exc)
+
+
+async def flush_all() -> None:
+    """Flush batched logs and stats for a graceful shutdown."""
+
+    await asyncio.gather(batch_logger.flush(), stats_cache.flush())
 
 
 def get_trust_levels() -> dict[str, str]:

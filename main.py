@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import logging
@@ -15,6 +16,12 @@ from flask import Flask, jsonify, render_template, request, send_file
 from flask_socketio import SocketIO
 
 from database import db
+from database.batch_manager import (
+    batch_logger,
+    register_signal_handlers,
+    start_periodic_flush,
+    stats_cache,
+)
 from database.models import Config
 from bot.anti_nuke import AntiNuke
 from bot.anti_raid import AntiRaid
@@ -26,6 +33,8 @@ logging.basicConfig(
     format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
 )
 logger = logging.getLogger(__name__)
+for noisy_logger in ("httpx", "engineio", "socketio"):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 # --- Discord Bot configuration
 intents = discord.Intents.default()
@@ -38,6 +47,7 @@ intents.messages = True
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 bot_status = {'ready': False}
 STAFF_ROLE_ID = 1236738451018223768
+_background_tasks_started = False
 
 # --- Flask + SocketIO
 app = Flask(__name__, template_folder='dashboard/templates', static_folder='dashboard/static')
@@ -53,6 +63,15 @@ config = db.load_config()
 slow_mode_manager = SlowModeManager(bot, config.to_dict())
 anti_nuke = AntiNuke(bot, config.to_dict())
 anti_raid = AntiRaid(bot, config.to_dict())
+
+
+def _ensure_background_tasks() -> None:
+    global _background_tasks_started
+    if _background_tasks_started:
+        return
+    start_periodic_flush(bot.loop)
+    register_signal_handlers(bot.loop)
+    _background_tasks_started = True
 
 
 def uptime() -> str:
@@ -286,6 +305,7 @@ async def collect_message_stats(guild: discord.Guild, cutoff: datetime.datetime)
 # --- Discord events and commands
 @bot.event
 async def on_ready():
+    _ensure_background_tasks()
     bot_status['ready'] = True
     logger.info('%s est connecté!', bot.user)
     try:
@@ -309,17 +329,20 @@ async def on_message(message: discord.Message):
     guild = message.guild
     if guild is None:
         return
-    db.log_event(
-        'message',
-        'info',
-        'Message reçu',
-        user_id=str(message.author.id),
-        user_name=str(message.author),
-        channel_id=str(message.channel.id),
-        guild_id=str(guild.id),
-        channel_name=message.channel.name,
+    await batch_logger.log(
+        {
+            'type': 'message',
+            'level': 'info',
+            'message': 'Message reçu',
+            'user_id': str(message.author.id),
+            'user_name': str(message.author),
+            'channel_id': str(message.channel.id),
+            'guild_id': str(guild.id),
+            'channel_name': message.channel.name,
+            'metadata': {},
+        }
     )
-    db.record_daily_stats(
+    stats_cache.increment(
         date_value=datetime.date.today(),
         guild_id=str(guild.id),
         members_total=guild.member_count,
