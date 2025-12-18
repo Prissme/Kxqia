@@ -3,6 +3,7 @@ import { AntiRaid } from "./security/antiRaid.js";
 import { AntiNuke } from "./security/antiNuke.js";
 import { SlowModeManager } from "./security/slowMode.js";
 import { getConfig } from "../db/database.js";
+import { TICKET_GUILD_ID, ticketCommand } from "./tickets.js";
 
 export function createClient(logger) {
   const client = new Client({
@@ -24,6 +25,8 @@ export function createClient(logger) {
     slowMode: new SlowModeManager(logger)
   };
 
+  client.logger = logger;
+
   client.commands = new Collection();
   const lockdown = new SlashCommandBuilder()
     .setName("lockdown")
@@ -39,13 +42,15 @@ export function createClient(logger) {
         )
     );
   client.commands.set(lockdown.name, lockdown);
+  client.commands.set(ticketCommand.name, ticketCommand);
 
   client.once("ready", async () => {
     const config = getConfig();
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+    const commandGuildId = process.env.GUILD_ID || TICKET_GUILD_ID;
     try {
-      await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), {
-        body: [lockdown.toJSON()]
+      await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, commandGuildId), {
+        body: [lockdown.toJSON(), ticketCommand.toJSON()]
       });
       console.log("Slash commands registered.");
     } catch (err) {
