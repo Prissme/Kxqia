@@ -11,3 +11,4 @@ simple-websocket==1.0.0
 gunicorn==21.2.0
 gevent==23.9.1
 gevent-websocket==0.10.1
+supabase==2.10.0
