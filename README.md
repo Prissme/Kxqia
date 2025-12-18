@@ -10,6 +10,7 @@ Bot Discord en **discord.py** avec dashboard web en **Flask + Flask-SocketIO** p
 - API REST (`/api/stats/*`, `/api/logs`, `/api/moderation/*`, `/api/config`, `/api/export/*`).
 - Health check `/health` prêt pour Koyeb.
 - Base SQLite (logs, stats quotidiennes, actions de modération, config).
+- Système de tickets dédié au serveur `1376052088047665242` : panneau embed avec bouton d'ouverture et persistance Supabase.
 
 ## Installation
 ```bash
@@ -25,7 +26,33 @@ DISCORD_TOKEN=votre_token
 PORT=8000
 DATABASE_PATH=/data/bot.db
 SECRET_KEY=change-me
+SUPABASE_URL=https://...supabase.co
+SUPABASE_KEY=cle_api_service_role
+TICKET_GUILD_ID=1376052088047665242
+TICKET_SUPPORT_ROLE_ID=role_id_staff
+TICKET_CATEGORY_ID=category_id_tickets
 ```
+
+Pense à dupliquer `.env.example` vers `.env` pour charger automatiquement ces variables avec `dotenv` :
+```
+cp .env.example .env
+# puis remplace chaque valeur par tes identifiants (ex. l'URL Supabase et la clé service_role fournies pour ton projet)
+```
+
+### Configuration Supabase
+1. Crée un projet Supabase et récupère l'URL et la clé **service_role** puis renseigne `SUPABASE_URL` et `SUPABASE_KEY` dans les variables d'environnement.
+2. Ajoute une table `tickets` avec les colonnes :
+   - `id` (bigint, primary key, auto increment)
+   - `guild_id` (text, non nul)
+   - `user_id` (text, non nul)
+   - `channel_id` (text, non nul)
+   - `topic` (text, nullable)
+   - `status` (text, non nul, valeurs attendues : `open`, `closed`, `deleted`)
+   - `created_at` (timestamp, non nul, default `now()`)
+   - `closed_at` (timestamp, nullable)
+   - `closed_by` (text, nullable)
+3. (Optionnel) Restreins l'accès avec les politiques RLS adaptées à ton usage. Le bot utilise la clé service_role et interagit côté serveur uniquement.
+4. Assure-toi que les colonnes `guild_id`, `user_id` et `channel_id` sont indexées si tu attends beaucoup de tickets pour garder des requêtes rapides.
 
 ## Démarrage local
 ```bash
