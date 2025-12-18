@@ -1,198 +1,146 @@
-"""Gestion SQLite pour logs et statistiques."""
+"""Supabase-based persistence layer."""
 import json
-import os
-import sqlite3
 import logging
 from datetime import datetime, date, timedelta
-from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from database.supabase_client import get_supabase, test_connection
 from database.models import Config
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_db_path() -> Path:
-    env_path = os.getenv('DATABASE_PATH')
-    if env_path:
-        return Path(env_path)
-    persistent_path = Path('/data/bot.db')
-    local_path = Path(__file__).resolve().parent / 'bot.db'
-    if persistent_path.parent.exists() and os.access(persistent_path.parent, os.W_OK):
-        return persistent_path
-    return local_path
-
-
-DB_PATH = _resolve_db_path()
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def init_db() -> None:
-    logger.info('Utilisation de la base SQLite: %s', DB_PATH)
-    with get_connection() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                type TEXT,
-                level TEXT,
-                message TEXT,
-                user_id TEXT,
-                user_name TEXT,
-                channel_id TEXT,
-                guild_id TEXT,
-                metadata TEXT
-            );
+    """Initialize connectivity to Supabase."""
+    if not test_connection():
+        logger.warning("Supabase connection could not be verified at startup")
 
-            CREATE TABLE IF NOT EXISTS moderation_actions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                action_type TEXT,
-                channel_id TEXT,
-                channel_name TEXT,
-                guild_id TEXT,
-                user_id TEXT,
-                user_name TEXT,
-                reason TEXT,
-                details TEXT
-            );
 
-            CREATE TABLE IF NOT EXISTS daily_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE,
-                guild_id TEXT,
-                members_total INTEGER,
-                members_joined INTEGER,
-                members_left INTEGER,
-                messages_sent INTEGER,
-                commands_used INTEGER,
-                UNIQUE(date, guild_id)
-            );
+def _ensure_client():
+    client = get_supabase()
+    if not client:
+        logger.warning("Supabase indisponible")
+    return client
 
-            CREATE TABLE IF NOT EXISTS config (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
 
-            CREATE TABLE IF NOT EXISTS vote_bans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id TEXT NOT NULL,
-                target_user_id TEXT NOT NULL,
-                voter_user_id TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(guild_id, target_user_id, voter_user_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS staff_votes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id TEXT NOT NULL,
-                target_user_id TEXT NOT NULL,
-                voter_user_id TEXT NOT NULL,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(guild_id, voter_user_id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_staff_votes_guild ON staff_votes(guild_id);
-            CREATE INDEX IF NOT EXISTS idx_staff_votes_target ON staff_votes(target_user_id);
-
-            CREATE INDEX IF NOT EXISTS idx_vote_bans_guild_target ON vote_bans(guild_id, target_user_id);
-
-            CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
-            CREATE INDEX IF NOT EXISTS idx_logs_type ON logs(type);
-            CREATE INDEX IF NOT EXISTS idx_moderation_timestamp ON moderation_actions(timestamp DESC);
-            CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date DESC);
-            """
-        )
-
+# SECTION 1 - LOGS
 
 def log_event(event_type: str, level: str, message: str, **metadata: Any) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO logs (type, level, message, user_id, user_name, channel_id, guild_id, metadata)
-            VALUES (:type, :level, :message, :user_id, :user_name, :channel_id, :guild_id, :metadata)
-            """,
-            {
-                'type': event_type,
-                'level': level,
-                'message': message,
-                'user_id': metadata.get('user_id'),
-                'user_name': metadata.get('user_name'),
-                'channel_id': metadata.get('channel_id'),
-                'guild_id': metadata.get('guild_id'),
-                'metadata': json.dumps(metadata, ensure_ascii=False),
-            },
-        )
-
-
-def add_moderation_action(action_type: str, channel_id: str, channel_name: str, user_id: str, user_name: str, reason: str, details: dict[str, Any]) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO moderation_actions (action_type, channel_id, channel_name, user_id, user_name, reason, details)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (action_type, channel_id, channel_name, user_id, user_name, reason, json.dumps(details, ensure_ascii=False)),
-        )
-
-
-def save_config(config: Config) -> None:
-    with get_connection() as conn:
-        for key, value in config.to_dict().items():
-            conn.execute(
-                """
-                INSERT INTO config(key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (key, json.dumps(value) if isinstance(value, (dict, list)) else str(value)),
-            )
-
-
-def load_config() -> Config:
-    with get_connection() as conn:
-        rows = conn.execute('SELECT key, value FROM config').fetchall()
-    mapping = {row['key']: _decode(row['value']) for row in rows}
-    return Config.from_mapping(mapping)
-
-
-def get_trust_levels() -> dict[str, str]:
-    """Retrieve all trust levels from the stored configuration."""
-    config = load_config()
-    return config.to_dict().get('trust_levels', {}) or {}
-
-
-def set_trust_level(user_id: str, level: str) -> None:
-    """Persist a trust level for a given user."""
-    config = load_config()
-    data = config.to_dict()
-    data.setdefault('trust_levels', {})[user_id] = level
-    save_config(Config.from_mapping(data))
-
-
-def remove_trust_level(user_id: str) -> None:
-    """Remove a stored trust level for a user if present."""
-    config = load_config()
-    data = config.to_dict()
-    if 'trust_levels' in data and user_id in data['trust_levels']:
-        del data['trust_levels'][user_id]
-        save_config(Config.from_mapping(data))
-
-
-def _decode(value: str) -> Any:
+    client = _ensure_client()
+    if not client:
+        return
+    payload = {
+        "type": event_type,
+        "level": level,
+        "message": message,
+        "user_id": metadata.get("user_id"),
+        "user_name": metadata.get("user_name"),
+        "channel_id": metadata.get("channel_id"),
+        "guild_id": metadata.get("guild_id"),
+        "metadata": metadata or {},
+    }
     try:
-        return json.loads(value)
-    except Exception:
-        return value
+        client.table("logs").insert(payload).execute()
+    except Exception as exc:
+        logger.error("Erreur log_event: %s", exc)
 
+
+def get_logs(filters: dict[str, Any]) -> dict[str, Any]:
+    client = _ensure_client()
+    if not client:
+        return {"logs": [], "stats": {}}
+
+    query = client.table("logs").select("timestamp,type,level,message,user_name")
+    if filters.get("type") and filters["type"] != "all":
+        query = query.eq("type", filters["type"])
+    if filters.get("search"):
+        query = query.ilike("message", f"%{filters['search']}%")
+    if filters.get("start"):
+        query = query.gte("timestamp", filters["start"])
+    if filters.get("end"):
+        query = query.lte("timestamp", filters["end"])
+
+    try:
+        rows = query.order("timestamp", desc=True).limit(100).execute().data or []
+        stats = {
+            "total": _count_logs(client),
+            "errors": _count_logs(client, level="error"),
+            "warnings": _count_logs(client, level="warning"),
+            "moderation": _count_logs(client, type_filter="moderation"),
+            "analytics": _count_logs(client, type_filter="analytics"),
+        }
+        return {"logs": rows, "stats": stats}
+    except Exception as exc:
+        logger.error("Erreur get_logs: %s", exc)
+        return {"logs": [], "stats": {}}
+
+
+def _count_logs(client, level: Optional[str] = None, type_filter: Optional[str] = None) -> int:
+    query = client.table("logs").select("id", count="exact")
+    if level:
+        query = query.eq("level", level)
+    if type_filter:
+        query = query.eq("type", type_filter)
+    try:
+        resp = query.execute()
+        return resp.count or 0
+    except Exception as exc:
+        logger.error("Erreur _count_logs: %s", exc)
+        return 0
+
+
+# SECTION 2 - MODERATION
+
+def add_moderation_action(
+    action_type: str,
+    channel_id: str,
+    channel_name: str,
+    user_id: str,
+    user_name: str,
+    reason: str,
+    details: dict[str, Any],
+) -> None:
+    client = _ensure_client()
+    if not client:
+        return
+
+    payload = {
+        "action_type": action_type,
+        "channel_id": channel_id,
+        "channel_name": channel_name,
+        "user_id": user_id,
+        "user_name": user_name,
+        "reason": reason,
+        "details": details,
+    }
+    try:
+        client.table("moderation_actions").insert(payload).execute()
+    except Exception as exc:
+        logger.error("Erreur add_moderation_action: %s", exc)
+
+
+def get_moderation_history(filters: dict[str, Any]) -> dict[str, Any]:
+    client = _ensure_client()
+    if not client:
+        return {"actions": []}
+
+    query = client.table("moderation_actions").select("*")
+    if filters.get("type") and filters["type"] != "all":
+        query = query.eq("action_type", filters["type"])
+    if filters.get("start"):
+        query = query.gte("timestamp", filters["start"])
+    if filters.get("end"):
+        query = query.lte("timestamp", filters["end"])
+
+    try:
+        actions = query.order("timestamp", desc=True).limit(200).execute().data or []
+        return {"actions": actions}
+    except Exception as exc:
+        logger.error("Erreur get_moderation_history: %s", exc)
+        return {"actions": []}
+
+
+# SECTION 3 - STATS
 
 def record_daily_stats(
     date_value: date,
@@ -203,469 +151,605 @@ def record_daily_stats(
     members_joined: int = 0,
     members_left: int = 0,
 ) -> None:
-    """Insert or increment daily stats for a guild on a given date."""
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO daily_stats(date, guild_id, members_total, members_joined, members_left, messages_sent, commands_used)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(date, guild_id) DO UPDATE SET
-                members_total=excluded.members_total,
-                members_joined=COALESCE(daily_stats.members_joined, 0) + excluded.members_joined,
-                members_left=COALESCE(daily_stats.members_left, 0) + excluded.members_left,
-                messages_sent=COALESCE(daily_stats.messages_sent, 0) + excluded.messages_sent,
-                commands_used=COALESCE(daily_stats.commands_used, 0) + excluded.commands_used
-            """,
-            (
-                date_value.isoformat(),
-                guild_id,
-                members_total,
-                members_joined,
-                members_left,
-                messages_sent,
-                commands_used,
-            ),
-        )
+    client = _ensure_client()
+    if not client:
+        return
 
-
-def count_user_messages(user_id: str, guild_id: Optional[str] = None) -> int:
-    """Return how many messages a user has sent, optionally scoped to a guild."""
-    query = "SELECT COUNT(*) FROM logs WHERE type='message' AND user_id=?"
-    params: list[str] = [user_id]
-    if guild_id:
-        query += " AND guild_id=?"
-        params.append(guild_id)
-    with get_connection() as conn:
-        row = conn.execute(query, params).fetchone()
-    return int(row[0] or 0)
-
-
-def add_vote_ban(guild_id: str, target_user_id: str, voter_user_id: str, reason: str) -> bool:
-    """Persist a voteban entry; returns True if inserted, False on duplicate."""
     try:
-        with get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO vote_bans(guild_id, target_user_id, voter_user_id, reason)
-                VALUES (?, ?, ?, ?)
-                """,
-                (guild_id, target_user_id, voter_user_id, reason),
-            )
-        return True
-    except sqlite3.IntegrityError:
-        return False
-
-
-def get_vote_bans(guild_id: str, target_user_id: str, days: int = 7) -> list[dict[str, Any]]:
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT guild_id, target_user_id, voter_user_id, reason, created_at
-            FROM vote_bans
-            WHERE guild_id = ? AND target_user_id = ? AND created_at >= ?
-            ORDER BY created_at DESC
-            """,
-            (guild_id, target_user_id, cutoff.isoformat()),
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def get_user_daily_votes(guild_id: str, voter_id: str) -> int:
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT COUNT(DISTINCT target_user_id) as total
-            FROM vote_bans
-            WHERE guild_id = ? AND voter_user_id = ? AND DATE(created_at) = DATE('now')
-            """,
-            (guild_id, voter_id),
-        ).fetchone()
-    return int(row['total'] or 0)
-
-
-def clear_vote_bans(guild_id: str, target_user_id: str) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            "DELETE FROM vote_bans WHERE guild_id = ? AND target_user_id = ?",
-            (guild_id, target_user_id),
+        existing_resp = (
+            client.table("daily_stats")
+            .select("*")
+            .eq("date", date_value.isoformat())
+            .eq("guild_id", guild_id)
+            .limit(1)
+            .execute()
         )
-
-
-def cleanup_old_votes(days: int = 30) -> None:
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    with get_connection() as conn:
-        conn.execute("DELETE FROM vote_bans WHERE created_at < ?", (cutoff.isoformat(),))
-
-
-def get_last_voteban_sanction(guild_id: str, target_user_id: str) -> Optional[datetime]:
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT MAX(timestamp) as ts
-            FROM moderation_actions
-            WHERE (guild_id = ? OR guild_id IS NULL)
-              AND action_type IN ('voteban','votemute')
-              AND details LIKE ?
-            """,
-            (guild_id, f'%"target_id": "{target_user_id}"%'),
-        ).fetchone()
-    if not row or not row['ts']:
-        return None
-    try:
-        return datetime.fromisoformat(row['ts'])
-    except Exception:
-        return None
-
-
-def upsert_staff_vote(guild_id: str, target_user_id: str, voter_user_id: str) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO staff_votes (guild_id, target_user_id, voter_user_id)
-            VALUES (?, ?, ?)
-            ON CONFLICT(guild_id, voter_user_id)
-            DO UPDATE SET target_user_id=excluded.target_user_id, created_at=CURRENT_TIMESTAMP
-            """,
-            (guild_id, target_user_id, voter_user_id),
-        )
-
-
-def get_staff_vote_for_user(guild_id: str, voter_user_id: str) -> Optional[str]:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT target_user_id FROM staff_votes WHERE guild_id = ? AND voter_user_id = ?",
-            (guild_id, voter_user_id),
-        ).fetchone()
-    return row['target_user_id'] if row else None
-
-
-def get_staff_vote_totals(guild_id: str) -> list[dict[str, Any]]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT target_user_id, COUNT(*) as total
-            FROM staff_votes
-            WHERE guild_id = ?
-            GROUP BY target_user_id
-            ORDER BY total DESC, MAX(created_at) DESC
-            """,
-            (guild_id,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+        existing = existing_resp.data[0] if existing_resp.data else {}
+        payload = {
+            "date": date_value.isoformat(),
+            "guild_id": guild_id,
+            "members_total": members_total,
+            "members_joined": (existing.get("members_joined") or 0) + members_joined,
+            "members_left": (existing.get("members_left") or 0) + members_left,
+            "messages_sent": (existing.get("messages_sent") or 0) + messages_sent,
+            "commands_used": (existing.get("commands_used") or 0) + commands_used,
+        }
+        client.table("daily_stats").upsert(payload, on_conflict="date,guild_id").execute()
+    except Exception as exc:
+        logger.error("Erreur record_daily_stats: %s", exc)
 
 
 def get_chart_data(days: int = 7) -> dict[str, list[dict[str, str | int]]]:
-    cutoff = date.today() - timedelta(days=days - 1)
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT date, SUM(messages_sent) as messages, SUM(members_joined) as joined, SUM(members_left) as left
-            FROM daily_stats
-            WHERE date >= ?
-            GROUP BY date
-            ORDER BY date ASC
-            """,
-            (cutoff.isoformat(),),
-        ).fetchall()
-    def _format(row_date: str) -> str:
-        return datetime.fromisoformat(row_date).strftime('%d/%m')
+    client = _ensure_client()
+    if not client:
+        return {"messages": [], "members": []}
 
-    return {
-        'messages': [{'label': _format(row['date']), 'value': row['messages'] or 0} for row in rows],
-        'members': [
-            {
-                'label': _format(row['date']),
-                'value': max((row['joined'] or 0) - (row['left'] or 0), 0),
-            }
-            for row in rows
-        ],
-    }
+    cutoff = date.today() - timedelta(days=days - 1)
+    try:
+        rows = (
+            client.table("daily_stats")
+            .select("date,messages_sent,members_joined,members_left")
+            .gte("date", cutoff.isoformat())
+            .order("date")
+            .execute()
+            .data
+            or []
+        )
+
+        def _format(label: str) -> str:
+            return datetime.fromisoformat(label).strftime("%d/%m")
+
+        return {
+            "messages": [{"label": _format(row["date"]), "value": row.get("messages_sent", 0) or 0} for row in rows],
+            "members": [
+                {
+                    "label": _format(row["date"]),
+                    "value": max((row.get("members_joined", 0) or 0) - (row.get("members_left", 0) or 0), 0),
+                }
+                for row in rows
+            ],
+        }
+    except Exception as exc:
+        logger.error("Erreur get_chart_data: %s", exc)
+        return {"messages": [], "members": []}
+
+
+def get_overview() -> dict[str, Any]:
+    client = _ensure_client()
+    if not client:
+        return {}
+
+    try:
+        stats_resp = client.table("daily_stats").select("*").order("date", desc=True).execute()
+        stats_rows = stats_resp.data or []
+        messages_total = sum(row.get("messages_sent") or 0 for row in stats_rows)
+        latest_per_guild = {}
+        for row in stats_rows:
+            if row.get("guild_id") not in latest_per_guild:
+                latest_per_guild[row.get("guild_id")] = row
+        members_total = sum(row.get("members_total") or 0 for row in latest_per_guild.values())
+
+        alerts = _count_logs(client, level="warning") + _count_logs(client, level="error")
+        timeline = (
+            client.table("logs")
+            .select("timestamp,type,message")
+            .order("timestamp", desc=True)
+            .limit(10)
+            .execute()
+            .data
+            or []
+        )
+        today = date.today().isoformat()
+        today_rows = (
+            client.table("daily_stats")
+            .select("messages_sent,members_joined,members_left")
+            .eq("date", today)
+            .execute()
+            .data
+            or []
+        )
+        messages_today = sum(row.get("messages_sent") or 0 for row in today_rows)
+        members_today = sum((row.get("members_joined") or 0) - (row.get("members_left") or 0) for row in today_rows)
+
+        return {
+            "members_total": members_total,
+            "messages_total": messages_total,
+            "alerts": alerts,
+            "alerts_pending": alerts,
+            "messages_today": messages_today,
+            "members_today": members_today,
+            "timeline": timeline,
+        }
+    except Exception as exc:
+        logger.error("Erreur get_overview: %s", exc)
+        return {}
 
 
 def get_top_channels(limit: int = 5, days: int = 7) -> list[dict[str, str | int]]:
+    client = _ensure_client()
+    if not client:
+        return []
     cutoff = datetime.utcnow() - timedelta(days=days)
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT channel_id, COUNT(*) as message_count
-            FROM logs
-            WHERE type = 'message' AND timestamp >= ? AND channel_id IS NOT NULL
-            GROUP BY channel_id
-            ORDER BY message_count DESC
-            LIMIT ?
-            """,
-            (cutoff.isoformat(), limit),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    try:
+        rows = (
+            client.table("logs")
+            .select("channel_id,timestamp")
+            .eq("type", "message")
+            .gte("timestamp", cutoff.isoformat())
+            .execute()
+            .data
+            or []
+        )
+        counts: dict[str, int] = {}
+        for row in rows:
+            channel = row.get("channel_id")
+            if channel:
+                counts[channel] = counts.get(channel, 0) + 1
+        sorted_counts = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:limit]
+        return [{"channel_id": cid, "message_count": total} for cid, total in sorted_counts]
+    except Exception as exc:
+        logger.error("Erreur get_top_channels: %s", exc)
+        return []
 
 
 def get_top_members(limit: int = 10, days: int = 7) -> list[dict[str, str | int]]:
     cutoff = datetime.utcnow() - timedelta(days=days)
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT user_id, COALESCE(MAX(user_name), '') as username, COUNT(*) as count
-            FROM logs
-            WHERE type = 'message' AND timestamp >= ? AND user_id IS NOT NULL
-            GROUP BY user_id
-            ORDER BY count DESC
-            LIMIT ?
-            """,
-            (cutoff.isoformat(), limit),
-        ).fetchall()
-    total = sum(row['count'] for row in rows) or 1
-    return [
-        {
-            'user_id': row['user_id'],
-            'username': row['username'] or row['user_id'],
-            'count': row['count'],
-            'percentage': round((row['count'] / total) * 100, 2),
-        }
-        for row in rows
-    ]
+    return get_top_members_between(cutoff, datetime.utcnow(), limit)
 
 
 def get_top_members_between(start: datetime, end: datetime, limit: int = 10) -> list[dict[str, str | int]]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT user_id, COALESCE(MAX(user_name), '') as username, COUNT(*) as count
-            FROM logs
-            WHERE type = 'message' AND timestamp BETWEEN ? AND ? AND user_id IS NOT NULL
-            GROUP BY user_id
-            ORDER BY count DESC
-            LIMIT ?
-            """,
-            (start.isoformat(), end.isoformat(), limit),
-        ).fetchall()
-    total = sum(row['count'] for row in rows) or 1
-    return [
-        {
-            'user_id': row['user_id'],
-            'username': row['username'] or row['user_id'],
-            'count': row['count'],
-            'percentage': round((row['count'] / total) * 100, 2),
-        }
-        for row in rows
-    ]
-
-
-def get_overview() -> dict[str, Any]:
-    with get_connection() as conn:
-        messages_total = conn.execute('SELECT COALESCE(SUM(messages_sent),0) as total FROM daily_stats').fetchone()['total']
-        members_rows = conn.execute(
-            'SELECT guild_id, members_total FROM daily_stats WHERE id IN (SELECT MAX(id) FROM daily_stats GROUP BY guild_id)'
-        ).fetchall()
-        alerts = conn.execute('SELECT COUNT(*) as total FROM logs WHERE level IN ("warning","error")').fetchone()['total']
-        timeline = conn.execute('SELECT timestamp, type, message FROM logs ORDER BY timestamp DESC LIMIT 10').fetchall()
-        today = date.today().isoformat()
-        today_row = conn.execute(
-            'SELECT COALESCE(SUM(messages_sent),0) as messages, COALESCE(SUM(members_joined),0) as joined, COALESCE(SUM(members_left),0) as left FROM daily_stats WHERE date = ?',
-            (today,),
-        ).fetchone()
-    return {
-        'members_total': sum(row['members_total'] for row in members_rows),
-        'messages_total': messages_total,
-        'alerts': alerts,
-        'alerts_pending': alerts,
-        'messages_today': today_row['messages'] if today_row else 0,
-        'members_today': (today_row['joined'] - today_row['left']) if today_row else 0,
-        'timeline': [{'timestamp': row['timestamp'], 'message': row['message'], 'type': row['type']} for row in timeline],
-    }
-
-
-def get_logs(filters: dict[str, Any]) -> dict[str, Any]:
-    params: list[Any] = []
-    clauses: list[str] = []
-    if filters.get('type') and filters['type'] != 'all':
-        clauses.append('type = ?')
-        params.append(filters['type'])
-    if filters.get('search'):
-        clauses.append('message LIKE ?')
-        params.append(f"%{filters['search']}%")
-    if filters.get('start'):
-        clauses.append('timestamp >= ?')
-        params.append(filters['start'])
-    if filters.get('end'):
-        clauses.append('timestamp <= ?')
-        params.append(filters['end'])
-    query = 'SELECT timestamp, type, level, message, user_name FROM logs'
-    if clauses:
-        query += ' WHERE ' + ' AND '.join(clauses)
-    query += ' ORDER BY timestamp DESC LIMIT 100'
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-        stats_row = conn.execute(
-            """
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN level='error' THEN 1 ELSE 0 END) as errors,
-                SUM(CASE WHEN level='warning' THEN 1 ELSE 0 END) as warnings,
-                SUM(CASE WHEN type='moderation' THEN 1 ELSE 0 END) as moderation,
-                SUM(CASE WHEN type='analytics' THEN 1 ELSE 0 END) as analytics
-            FROM logs
-            """
-        ).fetchone()
-    return {
-        'logs': [dict(row) for row in rows],
-        'stats': dict(stats_row) if stats_row else {},
-    }
-
-
-def get_moderation_history(filters: dict[str, Any]) -> dict[str, Any]:
-    clauses: list[str] = []
-    params: list[Any] = []
-    if filters.get('type') and filters['type'] != 'all':
-        clauses.append('action_type = ?')
-        params.append(filters['type'])
-    if filters.get('date'):
-        clauses.append('DATE(timestamp) = ?')
-        params.append(filters['date'])
-    query = 'SELECT timestamp, action_type, channel_name, user_name, details FROM moderation_actions'
-    if clauses:
-        query += ' WHERE ' + ' AND '.join(clauses)
-    query += ' ORDER BY timestamp DESC LIMIT 50'
-    with get_connection() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return {'actions': [dict(row) for row in rows]}
-
-
-def export_table(table: str) -> Iterable[sqlite3.Row]:
-    with get_connection() as conn:
-        yield from conn.execute(f'SELECT * FROM {table}')
+    client = _ensure_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("logs")
+            .select("user_id,user_name,timestamp")
+            .eq("type", "message")
+            .gte("timestamp", start.isoformat())
+            .lte("timestamp", end.isoformat())
+            .execute()
+            .data
+            or []
+        )
+        counts: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            user_id = row.get("user_id")
+            if not user_id:
+                continue
+            entry = counts.setdefault(user_id, {"count": 0, "username": row.get("user_name") or user_id})
+            entry["count"] += 1
+            if row.get("user_name"):
+                entry["username"] = row["user_name"]
+        sorted_counts = sorted(counts.items(), key=lambda item: item[1]["count"], reverse=True)[:limit]
+        total = sum(item[1]["count"] for item in sorted_counts) or 1
+        return [
+            {
+                "user_id": user_id,
+                "username": data["username"],
+                "count": data["count"],
+                "percentage": round((data["count"] / total) * 100, 2),
+            }
+            for user_id, data in sorted_counts
+        ]
+    except Exception as exc:
+        logger.error("Erreur get_top_members_between: %s", exc)
+        return []
 
 
 def get_activity_summary(start: datetime, end: datetime) -> dict[str, int]:
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) as messages, COUNT(DISTINCT user_id) as active_members
-            FROM logs
-            WHERE type = 'message' AND timestamp BETWEEN ? AND ?
-            """,
-            (start.isoformat(), end.isoformat()),
-        ).fetchone()
-    return {'messages': row['messages'] or 0, 'active_members': row['active_members'] or 0}
+    client = _ensure_client()
+    if not client:
+        return {"messages": 0, "active_members": 0}
+
+    try:
+        rows = (
+            client.table("logs")
+            .select("user_id,timestamp")
+            .eq("type", "message")
+            .gte("timestamp", start.isoformat())
+            .lte("timestamp", end.isoformat())
+            .execute()
+            .data
+            or []
+        )
+        messages = len(rows)
+        active_members = len({row.get("user_id") for row in rows if row.get("user_id")})
+        return {"messages": messages, "active_members": active_members}
+    except Exception as exc:
+        logger.error("Erreur get_activity_summary: %s", exc)
+        return {"messages": 0, "active_members": 0}
 
 
 def get_member_growth(start_date: date, end_date: date) -> list[dict[str, int | str]]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT date, SUM(members_joined) as joined, SUM(members_left) as left
-            FROM daily_stats
-            WHERE date BETWEEN ? AND ?
-            GROUP BY date
-            ORDER BY date ASC
-            """,
-            (start_date.isoformat(), end_date.isoformat()),
-        ).fetchall()
+    client = _ensure_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("daily_stats")
+            .select("date,members_joined,members_left")
+            .gte("date", start_date.isoformat())
+            .lte("date", end_date.isoformat())
+            .order("date")
+            .execute()
+            .data
+            or []
+        )
 
-    def _format(row_date: str) -> str:
-        return datetime.fromisoformat(row_date).strftime('%d/%m')
+        def _format(label: str) -> str:
+            return datetime.fromisoformat(label).strftime("%d/%m")
 
-    return [
-        {
-            'label': _format(row['date']),
-            'joined': row['joined'] or 0,
-            'left': row['left'] or 0,
-            'net': max((row['joined'] or 0) - (row['left'] or 0), 0),
-        }
-        for row in rows
-    ]
+        return [
+            {
+                "label": _format(row["date"]),
+                "joined": row.get("members_joined", 0) or 0,
+                "left": row.get("members_left", 0) or 0,
+                "net": max((row.get("members_joined", 0) or 0) - (row.get("members_left", 0) or 0), 0),
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        logger.error("Erreur get_member_growth: %s", exc)
+        return []
 
 
 def get_messages_timeseries(start: datetime, end: datetime) -> list[dict[str, int | str]]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT DATE(timestamp) as bucket, COUNT(*) as messages
-            FROM logs
-            WHERE type = 'message' AND timestamp BETWEEN ? AND ?
-            GROUP BY bucket
-            ORDER BY bucket ASC
-            """,
-            (start.isoformat(), end.isoformat()),
-        ).fetchall()
-    return [
-        {
-            'label': datetime.fromisoformat(row['bucket']).strftime('%d/%m'),
-            'value': row['messages'] or 0,
-        }
-        for row in rows
-    ]
+    client = _ensure_client()
+    if not client:
+        return []
+
+    try:
+        rows = (
+            client.table("logs")
+            .select("timestamp")
+            .eq("type", "message")
+            .gte("timestamp", start.isoformat())
+            .lte("timestamp", end.isoformat())
+            .order("timestamp")
+            .execute()
+            .data
+            or []
+        )
+        buckets: dict[str, int] = {}
+        for row in rows:
+            bucket = row.get("timestamp")
+            if bucket:
+                date_key = bucket.split("T", 1)[0]
+                buckets[date_key] = buckets.get(date_key, 0) + 1
+        return [
+            {"label": datetime.fromisoformat(day).strftime("%d/%m"), "value": count}
+            for day, count in sorted(buckets.items())
+        ]
+    except Exception as exc:
+        logger.error("Erreur get_messages_timeseries: %s", exc)
+        return []
 
 
 def get_top_channels_between(start: datetime, end: datetime, limit: int = 10) -> list[dict[str, str | int]]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT channel_id, COUNT(*) as message_count
-            FROM logs
-            WHERE type = 'message' AND timestamp BETWEEN ? AND ? AND channel_id IS NOT NULL
-            GROUP BY channel_id
-            ORDER BY message_count DESC
-            LIMIT ?
-            """,
-            (start.isoformat(), end.isoformat(), limit),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    client = _ensure_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("logs")
+            .select("channel_id,timestamp")
+            .eq("type", "message")
+            .gte("timestamp", start.isoformat())
+            .lte("timestamp", end.isoformat())
+            .execute()
+            .data
+            or []
+        )
+        counts: dict[str, int] = {}
+        for row in rows:
+            channel = row.get("channel_id")
+            if channel:
+                counts[channel] = counts.get(channel, 0) + 1
+        sorted_counts = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:limit]
+        return [{"channel_id": cid, "message_count": total} for cid, total in sorted_counts]
+    except Exception as exc:
+        logger.error("Erreur get_top_channels_between: %s", exc)
+        return []
 
 
 def get_heatmap_activity(start: datetime, end: datetime) -> list[dict[str, int | str]]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT STRFTIME('%w', timestamp) as weekday, STRFTIME('%H', timestamp) as hour, COUNT(*) as count
-            FROM logs
-            WHERE type = 'message' AND timestamp BETWEEN ? AND ?
-            GROUP BY weekday, hour
-            ORDER BY weekday, hour
-            """,
-            (start.isoformat(), end.isoformat()),
-        ).fetchall()
-    return [
-        {
-            'weekday': int(row['weekday']),
-            'hour': int(row['hour']),
-            'count': row['count'] or 0,
-        }
-        for row in rows
-    ]
+    client = _ensure_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("logs")
+            .select("timestamp")
+            .eq("type", "message")
+            .gte("timestamp", start.isoformat())
+            .lte("timestamp", end.isoformat())
+            .execute()
+            .data
+            or []
+        )
+        heatmap: dict[tuple[int, int], int] = {}
+        for row in rows:
+            ts = row.get("timestamp")
+            if not ts:
+                continue
+            dt = datetime.fromisoformat(ts)
+            key = (dt.weekday(), dt.hour)
+            heatmap[key] = heatmap.get(key, 0) + 1
+        return [
+            {"weekday": k[0], "hour": k[1], "count": v}
+            for k, v in sorted(heatmap.items())
+        ]
+    except Exception as exc:
+        logger.error("Erreur get_heatmap_activity: %s", exc)
+        return []
 
 
-def backup_database(destination_dir: Path | str | None = None) -> Path:
-    """Crée une sauvegarde horodatée de la base et retourne le chemin généré."""
-    backup_dir = Path(destination_dir) if destination_dir else DB_PATH.parent
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-    backup_path = backup_dir / f'bot_backup_{timestamp}.db'
-    with get_connection() as source_conn:
-        with sqlite3.connect(backup_path) as backup_conn:
-            source_conn.backup(backup_conn)
-    logger.info('Backup SQLite créé: %s', backup_path)
-    return backup_path
+# SECTION 4 - CONFIG
+
+def load_config() -> Config:
+    client = _ensure_client()
+    if not client:
+        return Config()
+    try:
+        rows = client.table("config").select("key,value").execute().data or []
+        mapping = {}
+        for row in rows:
+            value = row.get("value")
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except Exception:
+                    pass
+            mapping[row.get("key")] = value
+        return Config.from_mapping(mapping)
+    except Exception as exc:
+        logger.error("Erreur load_config: %s", exc)
+        return Config()
 
 
-def get_database_stats() -> dict[str, Any]:
-    """Retourne quelques métriques sur la base courante."""
-    size_bytes = DB_PATH.stat().st_size if DB_PATH.exists() else 0
-    backup_dir = DB_PATH.parent
-    backup_files = sorted(backup_dir.glob('bot_backup_*.db'))
-    last_backup = backup_files[-1] if backup_files else None
-    with get_connection() as conn:
-        counts = {
-            'logs': conn.execute('SELECT COUNT(*) FROM logs').fetchone()[0],
-            'moderation_actions': conn.execute('SELECT COUNT(*) FROM moderation_actions').fetchone()[0],
-            'daily_stats': conn.execute('SELECT COUNT(*) FROM daily_stats').fetchone()[0],
-            'config': conn.execute('SELECT COUNT(*) FROM config').fetchone()[0],
-        }
-        last_log_row = conn.execute('SELECT MAX(timestamp) as ts FROM logs').fetchone()
-    return {
-        'path': str(DB_PATH),
-        'size_bytes': size_bytes,
-        'tables': counts,
-        'last_log_entry': last_log_row['ts'] if last_log_row else None,
-        'last_backup': str(last_backup) if last_backup else None,
+def save_config(config: Config) -> None:
+    client = _ensure_client()
+    if not client:
+        return
+    payload = []
+    for key, value in config.to_dict().items():
+        payload.append({"key": key, "value": value})
+    try:
+        client.table("config").upsert(payload, on_conflict="key").execute()
+    except Exception as exc:
+        logger.error("Erreur save_config: %s", exc)
+
+
+def get_trust_levels() -> dict[str, str]:
+    config = load_config()
+    return config.to_dict().get("trust_levels", {}) or {}
+
+
+def set_trust_level(user_id: str, level: str) -> None:
+    config = load_config()
+    data = config.to_dict()
+    data.setdefault("trust_levels", {})[user_id] = level
+    save_config(Config.from_mapping(data))
+
+
+def remove_trust_level(user_id: str) -> None:
+    config = load_config()
+    data = config.to_dict()
+    if "trust_levels" in data and user_id in data["trust_levels"]:
+        del data["trust_levels"][user_id]
+        save_config(Config.from_mapping(data))
+
+
+# SECTION 5 - VOTES
+
+def add_vote_ban(guild_id: str, target_user_id: str, voter_user_id: str, reason: str) -> bool:
+    client = _ensure_client()
+    if not client:
+        return False
+    payload = {
+        "guild_id": guild_id,
+        "target_user_id": target_user_id,
+        "voter_user_id": voter_user_id,
+        "reason": reason,
     }
+    try:
+        client.table("vote_bans").insert(payload).execute()
+        return True
+    except Exception as exc:
+        logger.error("Erreur add_vote_ban: %s", exc)
+        return False
+
+
+def get_vote_bans(guild_id: str, target_user_id: str, days: int = 7) -> list[dict[str, Any]]:
+    client = _ensure_client()
+    if not client:
+        return []
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    try:
+        rows = (
+            client.table("vote_bans")
+            .select("guild_id,target_user_id,voter_user_id,reason,created_at")
+            .eq("guild_id", guild_id)
+            .eq("target_user_id", target_user_id)
+            .gte("created_at", cutoff.isoformat())
+            .order("created_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+        return rows
+    except Exception as exc:
+        logger.error("Erreur get_vote_bans: %s", exc)
+        return []
+
+
+def get_user_daily_votes(guild_id: str, voter_id: str) -> int:
+    client = _ensure_client()
+    if not client:
+        return 0
+    try:
+        today = date.today().isoformat()
+        resp = (
+            client.table("vote_bans")
+            .select("target_user_id")
+            .eq("guild_id", guild_id)
+            .eq("voter_user_id", voter_id)
+            .gte("created_at", today)
+            .execute()
+        )
+        distinct_targets = {row.get("target_user_id") for row in (resp.data or []) if row.get("target_user_id")}
+        return len(distinct_targets)
+    except Exception as exc:
+        logger.error("Erreur get_user_daily_votes: %s", exc)
+        return 0
+
+
+def clear_vote_bans(guild_id: str, target_user_id: str) -> None:
+    client = _ensure_client()
+    if not client:
+        return
+    try:
+        client.table("vote_bans").delete().eq("guild_id", guild_id).eq("target_user_id", target_user_id).execute()
+    except Exception as exc:
+        logger.error("Erreur clear_vote_bans: %s", exc)
+
+
+def get_last_voteban_sanction(guild_id: str, target_user_id: str) -> Optional[datetime]:
+    client = _ensure_client()
+    if not client:
+        return None
+    try:
+        resp = (
+            client.table("moderation_actions")
+            .select("timestamp,action_type,details,guild_id")
+            .in_("action_type", ["voteban", "votemute"])
+            .execute()
+        )
+        matches = []
+        for row in resp.data or []:
+            details = row.get("details") or {}
+            target_id = details.get("target_id") if isinstance(details, dict) else None
+            if target_id != target_user_id:
+                continue
+            if row.get("guild_id") not in (None, guild_id):
+                continue
+            ts = row.get("timestamp")
+            if ts:
+                matches.append(ts)
+        if not matches:
+            return None
+        return datetime.fromisoformat(sorted(matches, reverse=True)[0])
+    except Exception as exc:
+        logger.error("Erreur get_last_voteban_sanction: %s", exc)
+        return None
+
+
+def upsert_staff_vote(guild_id: str, target_user_id: str, voter_user_id: str) -> None:
+    client = _ensure_client()
+    if not client:
+        return
+    try:
+        client.table("staff_votes").upsert(
+            {
+                "guild_id": guild_id,
+                "target_user_id": target_user_id,
+                "voter_user_id": voter_user_id,
+            },
+            on_conflict="guild_id,voter_user_id",
+        ).execute()
+    except Exception as exc:
+        logger.error("Erreur upsert_staff_vote: %s", exc)
+
+
+def get_staff_vote_for_user(guild_id: str, voter_user_id: str) -> Optional[str]:
+    client = _ensure_client()
+    if not client:
+        return None
+    try:
+        resp = (
+            client.table("staff_votes")
+            .select("target_user_id")
+            .eq("guild_id", guild_id)
+            .eq("voter_user_id", voter_user_id)
+            .limit(1)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0].get("target_user_id")
+        return None
+    except Exception as exc:
+        logger.error("Erreur get_staff_vote_for_user: %s", exc)
+        return None
+
+
+def get_staff_vote_totals(guild_id: str) -> list[dict[str, Any]]:
+    client = _ensure_client()
+    if not client:
+        return []
+    try:
+        resp = (
+            client.table("staff_votes")
+            .select("target_user_id")
+            .eq("guild_id", guild_id)
+            .execute()
+        )
+        counts: dict[str, int] = {}
+        for row in resp.data or []:
+            target = row.get("target_user_id")
+            if target:
+                counts[target] = counts.get(target, 0) + 1
+        sorted_counts = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+        return [{"target_user_id": target, "total": total} for target, total in sorted_counts]
+    except Exception as exc:
+        logger.error("Erreur get_staff_vote_totals: %s", exc)
+        return []
+
+
+# SECTION 6 - MESSAGES
+
+def count_user_messages(user_id: str, guild_id: Optional[str] = None) -> int:
+    client = _ensure_client()
+    if not client:
+        return 0
+    try:
+        query = (
+            client.table("logs")
+            .select("id", count="exact")
+            .eq("type", "message")
+            .eq("user_id", user_id)
+        )
+        if guild_id:
+            query = query.eq("guild_id", guild_id)
+        resp = query.execute()
+        return resp.count or 0
+    except Exception as exc:
+        logger.error("Erreur count_user_messages: %s", exc)
+        return 0
+
+
+# SECTION 7 - CLEANUP
+
+def cleanup_old_votes(days: int = 30) -> None:
+    client = _ensure_client()
+    if not client:
+        return
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    try:
+        client.table("vote_bans").delete().lt("created_at", cutoff.isoformat()).execute()
+    except Exception as exc:
+        logger.error("Erreur cleanup_old_votes: %s", exc)
+
+
+# SECTION 8 - EXPORT
+
+def export_table(table: str) -> Iterable[dict]:
+    client = _ensure_client()
+    if not client:
+        return []
+    try:
+        resp = client.table(table).select("*").execute()
+        return resp.data or []
+    except Exception as exc:
+        logger.error("Erreur export_table: %s", exc)
+        return []
