@@ -45,6 +45,7 @@ intents.voice_states = True
 intents.messages = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+bot.trap_words: dict[int, str] = {}
 bot_status = {'ready': False}
 STAFF_ROLE_ID = 1236738451018223768
 _background_tasks_started = False
@@ -349,6 +350,20 @@ async def on_message(message: discord.Message):
         messages_sent=1,
     )
     slow_mode_manager.handle_message(message)
+    trap_word = bot.trap_words.get(guild.id)
+    if trap_word and trap_word in message.content.lower():
+        bot.trap_words.pop(guild.id, None)
+        if not isinstance(message.author, discord.Member):
+            return
+        try:
+            await message.author.timeout(datetime.timedelta(minutes=10), reason=f"Trap déclenché: {trap_word}")
+        except discord.Forbidden:
+            await message.channel.send("Je n'ai pas la permission de mettre ce membre en timeout.")
+            return
+        except discord.HTTPException:
+            await message.channel.send("Impossible d'appliquer le timeout pour le moment.")
+            return
+        await message.channel.send(f"🪤 {message.author.mention} a déclenché le trap et prend 10 minutes.")
 
 
 @bot.event
@@ -1031,6 +1046,38 @@ async def unpurge(interaction: discord.Interaction, reason: Optional[str] = None
 
     await channel.send(embed=info_embed)
     await interaction.followup.send('Le salon est à nouveau disponible pour les membres.', ephemeral=True)
+
+
+@bot.tree.command(name='trap', description='Définit un mot piégé pour mettre un membre en timeout')
+@app_commands.describe(mot='Mot piégé qui déclenche un timeout')
+async def trap(interaction: discord.Interaction, mot: str):
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.response.send_message('Permissions insuffisantes pour utiliser cette commande.', ephemeral=True)
+        return
+
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
+        return
+
+    trap_word = mot.strip().lower()
+    if not trap_word:
+        await interaction.response.send_message('Le mot piégé ne peut pas être vide.', ephemeral=True)
+        return
+
+    bot.trap_words[interaction.guild.id] = trap_word
+    db.log_event(
+        'moderation',
+        'info',
+        'Trap configuré',
+        user_id=str(interaction.user.id),
+        user_name=str(interaction.user),
+        channel_id=str(interaction.channel.id) if interaction.channel else None,
+        guild_id=str(interaction.guild.id),
+        metadata={'mot': mot},
+    )
+    await interaction.response.send_message(
+        f"🪤 La prochaine personne qui dit '{mot}' prend 10 minutes de timeout."
+    )
 
 
 @bot.tree.command(name='lockdown', description='Active/désactive le lockdown du serveur')
