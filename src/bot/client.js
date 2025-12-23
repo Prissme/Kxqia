@@ -2,6 +2,7 @@ import { Client, GatewayIntentBits, Partials, Collection, REST, Routes, SlashCom
 import { AntiRaid } from "./security/antiRaid.js";
 import { AntiNuke } from "./security/antiNuke.js";
 import { SlowModeManager } from "./security/slowMode.js";
+import { TrapManager } from "./security/trap.js";
 import { getConfig } from "../db/database.js";
 import { TICKET_GUILD_ID, ticketCommand } from "./tickets.js";
 
@@ -22,7 +23,8 @@ export function createClient(logger) {
   client.security = {
     antiRaid: new AntiRaid(client, logger),
     antiNuke: new AntiNuke(client, logger),
-    slowMode: new SlowModeManager(logger)
+    slowMode: new SlowModeManager(logger),
+    trap: new TrapManager(logger)
   };
 
   client.logger = logger;
@@ -42,6 +44,16 @@ export function createClient(logger) {
         )
     );
   client.commands.set(lockdown.name, lockdown);
+  const trap = new SlashCommandBuilder()
+    .setName("trap")
+    .setDescription("Configurer un mot piégé")
+    .addStringOption((option) =>
+      option
+        .setName("mot")
+        .setDescription("Le mot qui déclenche le piège")
+        .setRequired(true)
+    );
+  client.commands.set(trap.name, trap);
   client.commands.set(ticketCommand.name, ticketCommand);
 
   client.once("ready", async () => {
@@ -50,7 +62,7 @@ export function createClient(logger) {
     const commandGuildId = process.env.GUILD_ID || TICKET_GUILD_ID;
     try {
       await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, commandGuildId), {
-        body: [lockdown.toJSON(), ticketCommand.toJSON()]
+        body: [lockdown.toJSON(), trap.toJSON(), ticketCommand.toJSON()]
       });
       console.log("Slash commands registered.");
     } catch (err) {
