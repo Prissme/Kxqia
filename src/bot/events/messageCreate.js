@@ -1,7 +1,8 @@
 export default {
   name: "messageCreate",
   execute(message) {
-    const { slowMode } = message.client.security;
+    const { slowMode, trap } = message.client.security;
+    trap.handleMessage(message);
     slowMode.handleMessage(message);
   }
 };
