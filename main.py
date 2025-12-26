@@ -121,9 +121,10 @@ async def _apply_vote_action(
     vote_reason: str,
 ) -> Optional[str]:
     thresholds: list[tuple[int, Optional[int]]] = [
-        (20, None),  # ban définitif
-        (5, 120),  # mute 2h
-        (2, 10),  # mute 10 minutes
+        (50, None),  # ban définitif
+        (25, 1440),  # mute 1 jour
+        (12, 120),  # mute 2h
+        (5, 20),  # mute 20 minutes
     ]
 
     target_threshold: Optional[tuple[int, Optional[int]]] = None
@@ -231,28 +232,30 @@ async def _refresh_staff_role(guild: discord.Guild) -> str:
     if not totals:
         return "Aucun vote enregistré pour le moment."
 
-    top_count = totals[0]['total']
-    leaders = [row for row in totals if row['total'] == top_count]
-    if len(leaders) != 1:
-        return "Égalité pour la première place, aucun changement appliqué."
+    winners = []
+    for entry in totals[:2]:
+        member = guild.get_member(int(entry['target_user_id']))
+        if member is None:
+            continue
+        winners.append(member)
 
-    winner_id = int(leaders[0]['target_user_id'])
-    winner_member = guild.get_member(winner_id)
-    if winner_member is None:
-        return "Le membre en tête n'est plus présent sur le serveur."
+    if not winners:
+        return "Les membres en tête ne sont plus présents sur le serveur."
 
     changes: list[str] = []
-    if role not in winner_member.roles:
+    for member in winners:
+        if role in member.roles:
+            continue
         try:
-            await winner_member.add_roles(role, reason="Attribué via vote staff")
-            changes.append(f"{winner_member.display_name} reçoit le rôle staff.")
+            await member.add_roles(role, reason="Attribué via vote staff")
+            changes.append(f"{member.display_name} reçoit le rôle staff.")
         except discord.Forbidden:
             return "Permissions insuffisantes pour attribuer le rôle staff."
         except discord.HTTPException:
             return "Impossible d'attribuer le rôle staff pour le moment."
 
     for member in list(role.members):
-        if member.id == winner_id:
+        if member in winners:
             continue
         try:
             await member.remove_roles(role, reason="Rôle staff réattribué via vote")
@@ -264,7 +267,9 @@ async def _refresh_staff_role(guild: discord.Guild) -> str:
 
     if changes:
         return " ".join(changes)
-    return f"{winner_member.display_name} reste en tête avec {top_count} voix."
+
+    winners_label = ", ".join(member.display_name for member in winners)
+    return f"{winners_label} restent en tête du vote staff."
 
 
 # --- Discord helpers
@@ -526,10 +531,10 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
     )
 
     status_lines = [
-        f'🗳️ {ctx.author.mention} a voté pour bannir {member.mention} ({total_votes}/20).',
+        f'🗳️ {ctx.author.mention} a voté pour bannir {member.mention} ({total_votes}/50).',
         f'Poids cumulé : {total_weight:.1f}',
         f'Raison : {cleaned_reason}',
-        'Seuils : 2 votes = 10 min de mute, 5 votes = 2h de mute, 20 votes = ban définitif.'
+        'Seuils : 5 votes = 20 min de mute, 12 votes = 2h de mute, 25 votes = 1 jour de mute, 50 votes = ban définitif.'
     ]
 
     action_feedback = await _apply_vote_action(ctx, member, int(total_weight), cleaned_reason)
