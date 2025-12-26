@@ -1,4 +1,16 @@
-import { Client, GatewayIntentBits, Partials, Collection, REST, Routes, SlashCommandBuilder } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  Collection,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
+} from "discord.js";
 import { AntiRaid } from "./security/antiRaid.js";
 import { AntiNuke } from "./security/antiNuke.js";
 import { SlowModeManager } from "./security/slowMode.js";
@@ -7,6 +19,9 @@ import { getConfig } from "../db/database.js";
 import { TICKET_GUILD_ID, ticketCommand } from "./tickets.js";
 
 export function createClient(logger) {
+  const ROLE_CHANNEL_ID = "1267617798658457732";
+  const ROLE_SCRIMS_ID = "1451687979189014548";
+  const ROLE_LFN_ID = "1406762832720035891";
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -72,6 +87,42 @@ export function createClient(logger) {
     if (config.logChannelId) {
       const channel = await client.channels.fetch(config.logChannelId).catch(() => null);
       if (channel) channel.send("Security bot is online.").catch(() => {});
+    }
+
+    const roleChannel = await client.channels.fetch(ROLE_CHANNEL_ID).catch(() => null);
+    if (roleChannel?.isTextBased()) {
+      const embed = new EmbedBuilder()
+        .setTitle("Choisis tes rôles")
+        .setDescription(
+          `Sélectionne les rôles qui t'intéressent :\n\n` +
+            `• <@&${ROLE_SCRIMS_ID}> : scrims fun/sérieux + recherche ranked\n` +
+            `• <@&${ROLE_LFN_ID}> : LFN + Cups`
+        )
+        .setColor(0x5865f2);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("role_scrims")
+          .setLabel("Scrims / Ranked")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("role_lfn")
+          .setLabel("LFN / Cups")
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+      const existing = await roleChannel.messages.fetch({ limit: 10 }).catch(() => null);
+      const roleMessage = existing?.find(
+        (message) =>
+          message.author.id === client.user.id &&
+          message.embeds?.[0]?.title === "Choisis tes rôles"
+      );
+
+      if (roleMessage) {
+        await roleMessage.edit({ embeds: [embed], components: [row] }).catch(() => {});
+      } else {
+        await roleChannel.send({ embeds: [embed], components: [row] }).catch(() => {});
+      }
     }
   });
 
