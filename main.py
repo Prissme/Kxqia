@@ -48,7 +48,16 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 bot.trap_words: dict[int, str] = {}
 bot_status = {'ready': False}
 STAFF_ROLE_ID = 1236738451018223768
+ROLE_CHANNEL_ID = 1267617798658457732
+ROLE_SCRIMS_ID = 1451687979189014548
+ROLE_COMPETITIVE_ID = 1406762832720035891
+ROLE_BUTTON_IDS = {
+    "role_button_scrims",
+    "role_button_competitive",
+}
 _background_tasks_started = False
+_role_view_added = False
+_roles_view: Optional["RoleButtonsView"] = None
 
 # --- Flask + SocketIO
 app = Flask(__name__, template_folder='dashboard/templates', static_folder='dashboard/static')
@@ -75,12 +84,168 @@ def _ensure_background_tasks() -> None:
     _background_tasks_started = True
 
 
+def _get_roles_view() -> "RoleButtonsView":
+    global _roles_view
+    if _roles_view is None:
+        _roles_view = RoleButtonsView(bot)
+    return _roles_view
+
+
+# --- Rôles à boutons (embed + view persistante)
 def uptime() -> str:
     delta = datetime.datetime.utcnow() - start_time
     days, remainder = divmod(delta.total_seconds(), 86400)
     hours, remainder = divmod(remainder, 3600)
     minutes, _ = divmod(remainder, 60)
     return f"{int(days)}d {int(hours)}h {int(minutes)}m"
+
+
+def _build_roles_embed(guild: Optional[discord.Guild]) -> discord.Embed:
+    embed = discord.Embed(
+        title="🎮 Choisis ton mode de jeu !",
+        description=(
+            "Sélectionne le rôle qui correspond à ta vibe et commence à jouer.\n\n"
+            "**⚔️ Scrims / Ranked** — Pour les joueurs qui veulent grind le ladder.\n"
+            "**🏆 Competitive / LFN** — Pour les équipes et tournois sérieux."
+        ),
+        color=0x5865F2,
+    )
+    embed.set_footer(text="Clique sur un bouton pour activer/désactiver ton rôle.")
+    if guild and guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    return embed
+
+
+def _message_has_role_buttons(message: discord.Message) -> bool:
+    if not message.components:
+        return False
+    for row in message.components:
+        for component in row.children:
+            if getattr(component, "custom_id", None) in ROLE_BUTTON_IDS:
+                return True
+    return False
+
+
+async def _send_ephemeral(interaction: discord.Interaction, content: str) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(content, ephemeral=True)
+    else:
+        await interaction.response.send_message(content, ephemeral=True)
+
+
+async def _send_roles_message(source: str, guild: Optional[discord.Guild] = None) -> None:
+    channel = bot.get_channel(ROLE_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(ROLE_CHANNEL_ID)
+        except discord.NotFound:
+            logger.error("Salon des rôles introuvable (ID %s).", ROLE_CHANNEL_ID)
+            return
+        except discord.Forbidden:
+            logger.error("Permissions insuffisantes pour accéder au salon des rôles (%s).", ROLE_CHANNEL_ID)
+            return
+        except discord.HTTPException:
+            logger.exception("Erreur HTTP lors de la récupération du salon des rôles.")
+            return
+
+    if not isinstance(channel, discord.TextChannel):
+        logger.error("Le salon configuré pour les rôles n'est pas un salon textuel.")
+        return
+
+    target_guild = guild or channel.guild
+    bot_member = target_guild.me or target_guild.get_member(bot.user.id)
+    if bot_member is None:
+        logger.error("Impossible de vérifier les permissions du bot pour l'envoi des rôles.")
+        return
+    permissions = channel.permissions_for(bot_member)
+    if not (permissions.view_channel and permissions.send_messages and permissions.embed_links):
+        logger.error(
+            "Permissions insuffisantes pour envoyer l'embed des rôles dans %s.",
+            channel.name,
+        )
+        return
+
+    try:
+        async for message in channel.history(limit=50):
+            if message.author == bot.user and _message_has_role_buttons(message):
+                await message.delete()
+                logger.info("Ancien message de rôles supprimé dans %s.", channel.name)
+    except discord.Forbidden:
+        logger.warning("Impossible de supprimer les anciens messages de rôles (permissions manquantes).")
+    except discord.HTTPException:
+        logger.exception("Erreur lors de la suppression des anciens messages de rôles.")
+
+    embed = _build_roles_embed(target_guild)
+    view = _get_roles_view()
+    await channel.send(embed=embed, view=view)
+    logger.info("Embed des rôles envoyé (%s).", source)
+
+
+class RoleButtonsView(discord.ui.View):
+    def __init__(self, bot_instance: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot_instance
+
+    async def _toggle_role(self, interaction: discord.Interaction, role_id: int, role_label: str) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await _send_ephemeral(interaction, "Cette action doit être utilisée dans un serveur.")
+            return
+
+        guild = interaction.guild
+        role = guild.get_role(role_id)
+        if role is None:
+            await _send_ephemeral(interaction, f"Le rôle **{role_label}** est introuvable.")
+            logger.warning("Rôle introuvable: %s", role_id)
+            return
+
+        bot_member = guild.me or guild.get_member(self.bot.user.id)
+        if bot_member is None:
+            await _send_ephemeral(interaction, "Impossible de vérifier les permissions du bot.")
+            logger.error("Bot member introuvable pour le guild %s.", guild.id)
+            return
+
+        if not bot_member.guild_permissions.manage_roles:
+            await _send_ephemeral(interaction, "Je n'ai pas la permission de gérer les rôles.")
+            logger.warning("Permission Manage Roles manquante pour le bot.")
+            return
+
+        if role.managed or role >= bot_member.top_role:
+            await _send_ephemeral(interaction, "Je ne peux pas attribuer ce rôle (hiérarchie Discord).")
+            logger.warning("Rôle non attribuable: %s", role_id)
+            return
+
+        member = interaction.user
+        try:
+            if role in member.roles:
+                await member.remove_roles(role, reason="Retrait via boutons de rôles")
+                await _send_ephemeral(interaction, f"✅ Rôle **{role_label}** retiré.")
+                logger.info("Rôle %s retiré à %s.", role.name, member)
+            else:
+                await member.add_roles(role, reason="Ajout via boutons de rôles")
+                await _send_ephemeral(interaction, f"✨ Rôle **{role_label}** ajouté.")
+                logger.info("Rôle %s ajouté à %s.", role.name, member)
+        except discord.Forbidden:
+            await _send_ephemeral(interaction, "Je n'ai pas la permission de modifier ce rôle.")
+            logger.exception("Forbidden lors de la modification du rôle %s.", role_id)
+        except discord.HTTPException:
+            await _send_ephemeral(interaction, "Une erreur est survenue lors de la modification du rôle.")
+            logger.exception("HTTPException lors de la modification du rôle %s.", role_id)
+
+    @discord.ui.button(
+        label="⚔️ Scrims / Ranked",
+        style=discord.ButtonStyle.primary,
+        custom_id="role_button_scrims",
+    )
+    async def scrims_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle_role(interaction, ROLE_SCRIMS_ID, "Scrims / Ranked")
+
+    @discord.ui.button(
+        label="🏆 Competitive",
+        style=discord.ButtonStyle.success,
+        custom_id="role_button_competitive",
+    )
+    async def competitive_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle_role(interaction, ROLE_COMPETITIVE_ID, "Competitive / LFN")
 
 
 def _can_user_vote(member: discord.Member) -> tuple[bool, str]:
@@ -311,6 +476,7 @@ async def collect_message_stats(guild: discord.Guild, cutoff: datetime.datetime)
 # --- Discord events and commands
 @bot.event
 async def on_ready():
+    global _role_view_added
     _ensure_background_tasks()
     bot_status['ready'] = True
     logger.info('%s est connecté!', bot.user)
@@ -318,6 +484,14 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as exc:  # noqa: BLE001
         logger.exception('Sync des commandes échouée: %s', exc)
+    if not _role_view_added:
+        bot.add_view(_get_roles_view())
+        _role_view_added = True
+        logger.info("View persistante des rôles enregistrée.")
+    try:
+        await _send_roles_message(source="on_ready")
+    except discord.HTTPException:
+        logger.exception("Erreur lors de l'envoi automatique de l'embed des rôles.")
     for guild in bot.guilds:
         db.record_daily_stats(date_value=datetime.date.today(), guild_id=str(guild.id), members_total=guild.member_count)
     socketio.emit('bot_status', {
@@ -933,6 +1107,24 @@ async def syncstats(ctx: commands.Context):
 
     db.log_event('analytics', 'info', 'Sync stats terminé', guild_id=str(ctx.guild.id), metadata={'messages_indexed': processed})
     await ctx.send(f'Synchronisation terminée : {processed} messages comptés sur {len(stats)} jours.')
+
+
+@bot.tree.command(name='setup_roles', description='Renvoie l’embed des rôles dans le salon configuré')
+async def setup_roles(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
+        return
+    if not interaction.user.guild_permissions.manage_roles:
+        await interaction.response.send_message('Permissions insuffisantes pour utiliser cette commande.', ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        await _send_roles_message(source=f"setup_roles:{interaction.user}")
+        await interaction.followup.send("Embed des rôles envoyé avec succès.", ephemeral=True)
+    except discord.HTTPException:
+        logger.exception("Erreur lors de l'envoi manuel de l'embed des rôles.")
+        await interaction.followup.send("Impossible d'envoyer l'embed pour le moment.", ephemeral=True)
 
 
 @bot.event
