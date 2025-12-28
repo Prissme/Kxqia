@@ -815,6 +815,43 @@ def get_staff_vote_for_user(guild_id: str, voter_user_id: str) -> Optional[str]:
         return None
 
 
+def get_staff_votes(guild_id: str) -> list[dict[str, Any]]:
+    client = _ensure_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("staff_votes")
+            .select("guild_id,target_user_id,voter_user_id")
+            .eq("guild_id", guild_id)
+            .execute()
+            .data
+            or []
+        )
+        return rows
+    except Exception as exc:
+        logger.error("Erreur get_staff_votes: %s", exc)
+        return []
+
+
+def remove_staff_vote(guild_id: str, voter_user_id: str) -> bool:
+    client = _ensure_client()
+    if not client:
+        return False
+    try:
+        resp = (
+            client.table("staff_votes")
+            .delete()
+            .eq("guild_id", guild_id)
+            .eq("voter_user_id", voter_user_id)
+            .execute()
+        )
+        return bool(resp.data)
+    except Exception as exc:
+        logger.error("Erreur remove_staff_vote: %s", exc)
+        return False
+
+
 def get_staff_vote_totals(guild_id: str) -> list[dict[str, Any]]:
     client = _ensure_client()
     if not client:
