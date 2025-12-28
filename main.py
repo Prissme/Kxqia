@@ -249,22 +249,26 @@ class RoleButtonsView(discord.ui.View):
         await self._toggle_role(interaction, ROLE_COMPETITIVE_ID, "Competitive / LFN")
 
 
-def _can_user_vote(member: discord.Member) -> tuple[bool, str]:
+def _can_user_vote(member: discord.Member) -> tuple[bool, str, bool]:
     required_role = member.guild.get_role(VOTEBAN_ROLE_ID)
     if required_role and required_role not in member.roles:
-        return False, f"Tu ne peux voter que si tu as le rôle {required_role.mention}."
+        return False, f"Tu ne peux voter que si tu as le rôle {required_role.mention}.", True
     if not required_role:
-        return False, f"Tu ne peux voter que si tu as le rôle <@&{VOTEBAN_ROLE_ID}>."
+        return False, f"Tu ne peux voter que si tu as le rôle <@&{VOTEBAN_ROLE_ID}>.", True
 
     age = datetime.datetime.utcnow() - member.created_at.replace(tzinfo=None)
     if age < datetime.timedelta(days=14):
-        return False, "Votre compte doit avoir au moins 14 jours pour voter."
+        return False, "Votre compte doit avoir au moins 14 jours pour voter.", False
 
     total_messages = db.count_user_messages(str(member.id), str(member.guild.id))
     if total_messages < 100:
-        return False, f"Vous devez avoir envoyé au moins 100 messages sur le serveur (actuel: {total_messages})."
+        return (
+            False,
+            f"Vous devez avoir envoyé au moins 100 messages sur le serveur (actuel: {total_messages}).",
+            False,
+        )
 
-    return True, str(total_messages)
+    return True, str(total_messages), False
 
 
 def calculate_vote_weight(member: Optional[discord.Member], total_messages: int) -> float:
@@ -670,9 +674,13 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
         await ctx.send("Ce membre a déjà été sanctionné récemment. Cooldown de 24h en cours.")
         return
 
-    can_vote, detail = _can_user_vote(ctx.author)
+    can_vote, detail, use_embed = _can_user_vote(ctx.author)
     if not can_vote:
-        await ctx.send(detail)
+        if use_embed:
+            embed = discord.Embed(description=detail, color=0xED4245)
+            await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await ctx.send(detail)
         return
 
     daily_votes = db.get_user_daily_votes(str(ctx.guild.id), str(ctx.author.id))
@@ -772,9 +780,13 @@ async def votestaff(ctx: commands.Context, member: discord.Member):
         await ctx.send("Vous ne pouvez pas voter pour vous-même.")
         return
 
-    can_vote, detail = _can_user_vote(ctx.author)
+    can_vote, detail, use_embed = _can_user_vote(ctx.author)
     if not can_vote:
-        await ctx.send(detail)
+        if use_embed:
+            embed = discord.Embed(description=detail, color=0xED4245)
+            await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await ctx.send(detail)
         return
 
     previous_vote = db.get_staff_vote_for_user(str(ctx.guild.id), str(ctx.author.id))
