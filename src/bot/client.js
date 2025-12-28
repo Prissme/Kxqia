@@ -17,6 +17,7 @@ import { SlowModeManager } from "./security/slowMode.js";
 import { TrapManager } from "./security/trap.js";
 import { getConfig } from "../db/database.js";
 import { TICKET_GUILD_ID, ticketCommand } from "./tickets.js";
+import { buildInfoEmbed } from "./embeds.js";
 
 export function createClient(logger) {
   const ROLE_CHANNEL_ID = "1267617798658457732";
@@ -86,7 +87,9 @@ export function createClient(logger) {
     console.log(`Logged in as ${client.user.tag}`);
     if (config.logChannelId) {
       const channel = await client.channels.fetch(config.logChannelId).catch(() => null);
-      if (channel) channel.send("Security bot is online.").catch(() => {});
+      if (channel) {
+        channel.send({ embeds: [buildInfoEmbed("Security bot is online.")] }).catch(() => {});
+      }
     }
 
     const roleChannel = await client.channels.fetch(ROLE_CHANNEL_ID).catch(() => null);

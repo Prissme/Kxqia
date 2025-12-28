@@ -1,6 +1,7 @@
 import { PermissionFlagsBits, ChannelType } from "discord.js";
 import { recordStat, getConfig, getTrustLevels, pushEvent } from "../../db/database.js";
 import { isTrusted } from "./trustLevels.js";
+import { buildErrorEmbed, buildInfoEmbed } from "../embeds.js";
 
 export class AntiRaid {
   constructor(client, logger) {
@@ -81,7 +82,10 @@ export class AntiRaid {
     const trust = getTrustLevels();
     const executorId = interaction.user.id;
     if (!isTrusted(executorId, trust)) {
-      await interaction.reply({ content: "You are not trusted to run this command.", ephemeral: true });
+      await interaction.reply({
+        embeds: [buildErrorEmbed("You are not trusted to run this command.")],
+        ephemeral: true
+      });
       return;
     }
 
@@ -90,6 +94,9 @@ export class AntiRaid {
     } else {
       await this.disableLockdown(interaction.guild, `Manual toggle by ${interaction.user.tag}`);
     }
-    await interaction.reply({ content: `Lockdown ${enable ? "enabled" : "disabled"}.`, ephemeral: true });
+    await interaction.reply({
+      embeds: [buildInfoEmbed(`Lockdown ${enable ? "enabled" : "disabled"}.`)],
+      ephemeral: true
+    });
   }
 }
