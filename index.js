@@ -4,9 +4,12 @@ require('dotenv').config();
 const CHANNEL_ID = '1267617798658457732';
 const ROLE_SCRIMS = '1451687979189014548';
 const ROLE_COMP = '1406762832720035891';
+const ROLE_LFN_TEAM = '1454475274296099058';
 
 const BUTTON_SCRIMS = 'toggle_role_scrims_ranked';
 const BUTTON_COMP = 'toggle_role_competitive';
+const BUTTON_LFN_TEAM = 'toggle_role_lfn_team';
+const SAFE_ALLOWED_MENTIONS = { parse: [] };
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
@@ -15,7 +18,15 @@ const client = new Client({
 function buildRoleEmbed() {
   return new EmbedBuilder()
     .setTitle('Choisis tes rôles')
-    .setDescription('Clique sur un bouton pour activer ou retirer un rôle (opt-in).');
+    .setDescription(
+      [
+        'Clique sur un bouton pour activer ou retirer un rôle (opt-in).',
+        '',
+        `• ⚔️ <@&${ROLE_SCRIMS}> — Scrims / Ranked`,
+        `• 🏆 <@&${ROLE_COMP}> — Competitive / LFN`,
+        `• 🤝 <@&${ROLE_LFN_TEAM}> — Recherche équipe LFN`,
+      ].join('\n')
+    );
 }
 
 function buildRoleButtons() {
@@ -29,7 +40,12 @@ function buildRoleButtons() {
     .setLabel('🏆 Competitive')
     .setStyle(ButtonStyle.Success);
 
-  return new ActionRowBuilder().addComponents(scrimsButton, compButton);
+  const lfnTeamButton = new ButtonBuilder()
+    .setCustomId(BUTTON_LFN_TEAM)
+    .setLabel('🤝 LFN team')
+    .setStyle(ButtonStyle.Secondary);
+
+  return new ActionRowBuilder().addComponents(scrimsButton, compButton, lfnTeamButton);
 }
 
 function buildStatusEmbed(message, color) {
@@ -39,7 +55,11 @@ function buildStatusEmbed(message, color) {
 async function sendRoleMessage() {
   const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
-  await channel.send({ embeds: [buildRoleEmbed()], components: [buildRoleButtons()] });
+  await channel.send({
+    embeds: [buildRoleEmbed()],
+    components: [buildRoleButtons()],
+    allowedMentions: SAFE_ALLOWED_MENTIONS
+  });
 }
 
 async function handleToggle(interaction, roleId) {
@@ -50,14 +70,16 @@ async function handleToggle(interaction, roleId) {
   if (!me) {
     return interaction.reply({
       embeds: [buildStatusEmbed("Membre du bot introuvable.", 0xed4245)],
-      ephemeral: true
+      ephemeral: true,
+      allowedMentions: SAFE_ALLOWED_MENTIONS
     });
   }
 
   if (!me.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
     return interaction.reply({
       embeds: [buildStatusEmbed("Je n'ai pas la permission Manage Roles.", 0xed4245)],
-      ephemeral: true
+      ephemeral: true,
+      allowedMentions: SAFE_ALLOWED_MENTIONS
     });
   }
 
@@ -65,14 +87,16 @@ async function handleToggle(interaction, roleId) {
   if (!role) {
     return interaction.reply({
       embeds: [buildStatusEmbed("Rôle introuvable.", 0xed4245)],
-      ephemeral: true
+      ephemeral: true,
+      allowedMentions: SAFE_ALLOWED_MENTIONS
     });
   }
 
   if (me.roles.highest.comparePositionTo(role) <= 0) {
     return interaction.reply({
       embeds: [buildStatusEmbed("Mon rôle est en dessous du rôle à attribuer.", 0xed4245)],
-      ephemeral: true
+      ephemeral: true,
+      allowedMentions: SAFE_ALLOWED_MENTIONS
     });
   }
 
@@ -80,7 +104,8 @@ async function handleToggle(interaction, roleId) {
   if (!member) {
     return interaction.reply({
       embeds: [buildStatusEmbed("Membre introuvable.", 0xed4245)],
-      ephemeral: true
+      ephemeral: true,
+      allowedMentions: SAFE_ALLOWED_MENTIONS
     });
   }
 
@@ -89,19 +114,22 @@ async function handleToggle(interaction, roleId) {
       await member.roles.remove(role.id);
       return interaction.reply({
         embeds: [buildStatusEmbed("Rôle retiré ❌", 0x57f287)],
-        ephemeral: true
+        ephemeral: true,
+        allowedMentions: SAFE_ALLOWED_MENTIONS
       });
     }
 
     await member.roles.add(role.id);
     return interaction.reply({
       embeds: [buildStatusEmbed("Rôle ajouté ✅", 0x57f287)],
-      ephemeral: true
+      ephemeral: true,
+      allowedMentions: SAFE_ALLOWED_MENTIONS
     });
   } catch (error) {
     return interaction.reply({
       embeds: [buildStatusEmbed("Erreur lors de la mise à jour du rôle.", 0xed4245)],
-      ephemeral: true
+      ephemeral: true,
+      allowedMentions: SAFE_ALLOWED_MENTIONS
     });
   }
 }
@@ -121,6 +149,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (interaction.customId === BUTTON_COMP) {
     return handleToggle(interaction, ROLE_COMP);
+  }
+
+  if (interaction.customId === BUTTON_LFN_TEAM) {
+    return handleToggle(interaction, ROLE_LFN_TEAM);
   }
 });
 
