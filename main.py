@@ -25,6 +25,7 @@ from database.batch_manager import (
 from database.models import Config
 from bot.anti_nuke import AntiNuke
 from bot.anti_raid import AntiRaid
+from bot.custom_voice import CustomVoiceManager
 from bot.trust_levels import get_trust_level, is_trusted
 from bot.slow_mode import SlowModeManager
 
@@ -46,6 +47,7 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 bot.trap_words: dict[int, str] = {}
+custom_voice_manager = CustomVoiceManager(bot)
 bot_status = {'ready': False}
 STAFF_ROLE_ID = 1236738451018223768
 VOTEBAN_ROLE_ID = 1454894276768174244
@@ -271,6 +273,42 @@ def _can_user_vote(member: discord.Member) -> tuple[bool, str, bool]:
     return True, str(total_messages), False
 
 
+def _prune_votes_without_role(guild: discord.Guild, target_user_id: str) -> int:
+    required_role = guild.get_role(VOTEBAN_ROLE_ID)
+    if required_role is None:
+        return 0
+    removed = 0
+    for vote in db.get_vote_bans(str(guild.id), target_user_id):
+        voter_id = vote.get("voter_user_id")
+        if not voter_id:
+            continue
+        voter = guild.get_member(int(voter_id))
+        if voter is None or required_role not in voter.roles:
+            if db.remove_vote_ban(str(guild.id), target_user_id, str(voter_id)):
+                removed += 1
+    if removed:
+        logger.info("Votes supprimés faute de rôle requis: %s", removed)
+    return removed
+
+
+def _prune_staff_votes_without_role(guild: discord.Guild) -> int:
+    required_role = guild.get_role(VOTEBAN_ROLE_ID)
+    if required_role is None:
+        return 0
+    removed = 0
+    for vote in db.get_staff_votes(str(guild.id)):
+        voter_id = vote.get("voter_user_id")
+        if not voter_id:
+            continue
+        voter = guild.get_member(int(voter_id))
+        if voter is None or required_role not in voter.roles:
+            if db.remove_staff_vote(str(guild.id), str(voter_id)):
+                removed += 1
+    if removed:
+        logger.info("Votes staff supprimés faute de rôle requis: %s", removed)
+    return removed
+
+
 def calculate_vote_weight(member: Optional[discord.Member], total_messages: int) -> float:
     weight = 1.0
     if member:
@@ -404,6 +442,7 @@ async def _refresh_staff_role(guild: discord.Guild) -> str:
     if role is None:
         return "Rôle staff introuvable sur ce serveur."
 
+    _prune_staff_votes_without_role(guild)
     totals = db.get_staff_vote_totals(str(guild.id))
     if not totals:
         return "Aucun vote enregistré pour le moment."
@@ -503,6 +542,11 @@ async def on_ready():
         await _send_roles_message(source="on_ready")
     except discord.HTTPException:
         logger.exception("Erreur lors de l'envoi automatique de l'embed des rôles.")
+    try:
+        await custom_voice_manager.initialize()
+        logger.info("Système de vocaux personnalisés initialisé")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur lors de l'initialisation des vocaux: %s", exc)
     for guild in bot.guilds:
         db.record_daily_stats(date_value=datetime.date.today(), guild_id=str(guild.id), members_total=guild.member_count)
     socketio.emit('bot_status', {
@@ -618,6 +662,15 @@ async def on_guild_channel_update(before, after):
     await anti_nuke.handle_channel_update(before, after)
 
 
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """Gère la création et suppression automatique de salons vocaux personnalisés."""
+    try:
+        await custom_voice_manager.handle_voice_state_update(member, before, after)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur dans le gestionnaire de vocaux: %s", exc)
+
+
 @bot.command(name='help')
 async def help_command(ctx: commands.Context):
     embed = discord.Embed(
@@ -694,6 +747,7 @@ async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Opti
         await ctx.send("Vous avez déjà voté pour ce bannissement.")
         return
 
+    _prune_votes_without_role(ctx.guild, str(member.id))
     all_votes = db.get_vote_bans(str(ctx.guild.id), str(member.id))
     total_votes = len(all_votes)
     total_weight = sum(
@@ -753,6 +807,8 @@ def _format_staff_leaderboard(guild: discord.Guild, totals: list[dict[str, int]]
 
 
 def _build_voteban_status_embed(guild: Optional[discord.Guild], target: discord.Member) -> Optional[discord.Embed]:
+    if guild:
+        _prune_votes_without_role(guild, str(target.id))
     votes = db.get_vote_bans(str(guild.id), str(target.id)) if guild else []
     if not votes:
         return None
@@ -789,6 +845,7 @@ async def votestaff(ctx: commands.Context, member: discord.Member):
             await ctx.send(detail)
         return
 
+    _prune_staff_votes_without_role(ctx.guild)
     previous_vote = db.get_staff_vote_for_user(str(ctx.guild.id), str(ctx.author.id))
     db.upsert_staff_vote(str(ctx.guild.id), str(member.id), str(ctx.author.id))
 
@@ -865,6 +922,7 @@ async def votes(ctx: commands.Context):
         await ctx.send('Cette commande doit être utilisée sur un serveur.')
         return
 
+    _prune_staff_votes_without_role(ctx.guild)
     totals = db.get_staff_vote_totals(str(ctx.guild.id))
     if not totals:
         await ctx.send("Aucun vote staff enregistré pour le moment. Utilisez `!votestaff @membre` pour voter.")
@@ -1145,6 +1203,15 @@ async def syncstats(ctx: commands.Context):
 
     db.log_event('analytics', 'info', 'Sync stats terminé', guild_id=str(ctx.guild.id), metadata={'messages_indexed': processed})
     await ctx.send(f'Synchronisation terminée : {processed} messages comptés sur {len(stats)} jours.')
+
+
+@bot.command(name='cleanvoice')
+@commands.has_permissions(administrator=True)
+async def clean_voice(ctx: commands.Context):
+    """Nettoie les salons vocaux personnalisés vides."""
+    await ctx.send("🧹 Nettoyage des vocaux en cours...")
+    cleaned = await custom_voice_manager.cleanup_abandoned_channels()
+    await ctx.send(f"✅ Nettoyage terminé : {cleaned} salon(x) supprimé(s).")
 
 
 @bot.tree.command(name='setup_roles', description='Renvoie l’embed des rôles dans le salon configuré')
