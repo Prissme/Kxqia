@@ -16,6 +16,7 @@ import {
   getSupabase,
   getTicketByChannel
 } from "../tickets/supabase.js";
+import { buildErrorEmbed, buildInfoEmbed, buildSuccessEmbed } from "./embeds.js";
 
 export const TICKET_GUILD_ID = process.env.TICKET_GUILD_ID || "1376052088047665242";
 const SUPPORT_ROLE_ID = process.env.TICKET_SUPPORT_ROLE_ID;
@@ -114,7 +115,7 @@ async function handleOpen(interaction) {
   if (interaction.guildId !== TICKET_GUILD_ID) {
     return interaction.reply({
       ephemeral: true,
-      content: "Le système de tickets est uniquement disponible sur le serveur support."
+      embeds: [buildErrorEmbed("Le système de tickets est uniquement disponible sur le serveur support.")]
     });
   }
 
@@ -122,7 +123,7 @@ async function handleOpen(interaction) {
   if (!supabase) {
     return interaction.reply({
       ephemeral: true,
-      content: "Configuration Supabase manquante : impossible d'ouvrir un ticket."
+      embeds: [buildErrorEmbed("Configuration Supabase manquante : impossible d'ouvrir un ticket.")]
     });
   }
 
@@ -132,7 +133,7 @@ async function handleOpen(interaction) {
     if (channel) {
       return interaction.reply({
         ephemeral: true,
-        content: `Vous avez déjà un ticket ouvert : ${channel.toString()}`
+        embeds: [buildInfoEmbed(`Vous avez déjà un ticket ouvert : ${channel.toString()}`)]
       });
     }
 
@@ -151,13 +152,19 @@ async function handleOpen(interaction) {
 
   const supportPing = SUPPORT_ROLE_ID ? `<@&${SUPPORT_ROLE_ID}>` : "l'équipe";
   await channel.send(
-    `${supportPing} nouveau ticket ouvert par ${interaction.user} — décris ton problème pour qu'on puisse t'aider.\n` +
-      `Sujet : ${inlineCode(topic || "non spécifié")}`
+    {
+      embeds: [
+        buildInfoEmbed(
+          `${supportPing} nouveau ticket ouvert par ${interaction.user} — décris ton problème pour qu'on puisse t'aider.\n` +
+            `Sujet : ${inlineCode(topic || "non spécifié")}`
+        )
+      ]
+    }
   );
 
   return interaction.reply({
     ephemeral: true,
-    content: `Ticket créé : ${channel.toString()}`
+    embeds: [buildSuccessEmbed(`Ticket créé : ${channel.toString()}`)]
   });
 }
 
@@ -165,7 +172,7 @@ async function handlePanel(interaction) {
   if (interaction.guildId !== TICKET_GUILD_ID) {
     return interaction.reply({
       ephemeral: true,
-      content: "Le panneau de tickets est réservé au serveur support."
+      embeds: [buildErrorEmbed("Le panneau de tickets est réservé au serveur support.")]
     });
   }
 
@@ -175,14 +182,17 @@ async function handlePanel(interaction) {
   if (!canManagePanel && !hasSupportRole) {
     return interaction.reply({
       ephemeral: true,
-      content: "Seul le staff peut publier le panneau de tickets."
+      embeds: [buildErrorEmbed("Seul le staff peut publier le panneau de tickets.")]
     });
   }
 
   const panel = buildTicketPanel();
   await interaction.channel.send(panel);
 
-  return interaction.reply({ ephemeral: true, content: "Panneau de tickets publié." });
+  return interaction.reply({
+    ephemeral: true,
+    embeds: [buildSuccessEmbed("Panneau de tickets publié.")]
+  });
 }
 
 async function handleClose(interaction) {
@@ -190,13 +200,16 @@ async function handleClose(interaction) {
   if (!supabase) {
     return interaction.reply({
       ephemeral: true,
-      content: "Configuration Supabase manquante : impossible de fermer ce ticket."
+      embeds: [buildErrorEmbed("Configuration Supabase manquante : impossible de fermer ce ticket.")]
     });
   }
 
   const ticket = await getTicketByChannel(interaction.channelId);
   if (!ticket) {
-    return interaction.reply({ ephemeral: true, content: "Ce salon n'est pas reconnu comme un ticket." });
+    return interaction.reply({
+      ephemeral: true,
+      embeds: [buildErrorEmbed("Ce salon n'est pas reconnu comme un ticket.")]
+    });
   }
 
   const isOwner = ticket.user_id === interaction.user.id;
@@ -205,7 +218,10 @@ async function handleClose(interaction) {
     : interaction.memberPermissions.has(PermissionFlagsBits.ManageChannels);
 
   if (!isOwner && !hasSupportRole) {
-    return interaction.reply({ ephemeral: true, content: "Seul le créateur ou le staff peut fermer ce ticket." });
+    return interaction.reply({
+      ephemeral: true,
+      embeds: [buildErrorEmbed("Seul le créateur ou le staff peut fermer ce ticket.")]
+    });
   }
 
   const reason = interaction.options.getString("raison") || "Ticket clôturé";
@@ -218,12 +234,23 @@ async function handleClose(interaction) {
 
   await interaction.channel.setName(`closed-${interaction.channel.name}`.slice(0, 90)).catch(() => {});
   await interaction.channel.send(
-    `${bold("Ticket fermé")} par ${interaction.user}. Raison : ${inlineCode(reason)}. Le salon sera supprimé dans 1 heure.`
+    {
+      embeds: [
+        buildInfoEmbed(
+          `${bold("Ticket fermé")} par ${interaction.user}. Raison : ${inlineCode(
+            reason
+          )}. Le salon sera supprimé dans 1 heure.`
+        )
+      ]
+    }
   );
 
   setTimeout(() => interaction.channel.delete("Ticket fermé").catch(() => {}), 60 * 60 * 1000);
 
-  return interaction.reply({ ephemeral: true, content: "Ticket fermé." });
+  return interaction.reply({
+    ephemeral: true,
+    embeds: [buildSuccessEmbed("Ticket fermé.")]
+  });
 }
 
 export async function handleTicketCommand(interaction) {
@@ -233,7 +260,10 @@ export async function handleTicketCommand(interaction) {
   if (sub === "fermer") return handleClose(interaction);
   if (sub === "panel") return handlePanel(interaction);
 
-  return interaction.reply({ ephemeral: true, content: "Commande de ticket inconnue." });
+  return interaction.reply({
+    ephemeral: true,
+    embeds: [buildErrorEmbed("Commande de ticket inconnue.")]
+  });
 }
 
 export async function handleTicketButton(interaction) {
@@ -244,12 +274,15 @@ export async function handleTicketButton(interaction) {
   if (!supabase) {
     return interaction.reply({
       ephemeral: true,
-      content: "Configuration Supabase manquante : impossible d'ouvrir un ticket."
+      embeds: [buildErrorEmbed("Configuration Supabase manquante : impossible d'ouvrir un ticket.")]
     });
   }
 
   if (interaction.guildId !== TICKET_GUILD_ID) {
-    return interaction.reply({ ephemeral: true, content: "Ce bouton n'est pas actif sur ce serveur." });
+    return interaction.reply({
+      ephemeral: true,
+      embeds: [buildErrorEmbed("Ce bouton n'est pas actif sur ce serveur.")]
+    });
   }
 
   const existing = await getOpenTicket(TICKET_GUILD_ID, interaction.user.id);
@@ -258,7 +291,7 @@ export async function handleTicketButton(interaction) {
     if (channel) {
       return interaction.reply({
         ephemeral: true,
-        content: `Tu as déjà un ticket ouvert : ${channel.toString()}`
+        embeds: [buildInfoEmbed(`Tu as déjà un ticket ouvert : ${channel.toString()}`)]
       });
     }
 
@@ -276,12 +309,18 @@ export async function handleTicketButton(interaction) {
 
   const supportPing = SUPPORT_ROLE_ID ? `<@&${SUPPORT_ROLE_ID}>` : "l'équipe";
   await channel.send(
-    `${supportPing} nouveau ticket ouvert par ${interaction.user} — décris ton problème pour qu'on puisse t'aider.\n` +
-      `Sujet : ${inlineCode("non spécifié")}`
+    {
+      embeds: [
+        buildInfoEmbed(
+          `${supportPing} nouveau ticket ouvert par ${interaction.user} — décris ton problème pour qu'on puisse t'aider.\n` +
+            `Sujet : ${inlineCode("non spécifié")}`
+        )
+      ]
+    }
   );
 
   return interaction.reply({
     ephemeral: true,
-    content: `Ticket créé : ${channel.toString()}`
+    embeds: [buildSuccessEmbed(`Ticket créé : ${channel.toString()}`)]
   });
 }

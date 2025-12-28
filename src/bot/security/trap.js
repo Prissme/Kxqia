@@ -1,4 +1,5 @@
 import { PermissionsBitField } from "discord.js";
+import { buildErrorEmbed, buildInfoEmbed } from "../embeds.js";
 
 const TRAP_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -14,20 +15,29 @@ export class TrapManager {
 
   async handleCommand(interaction, word) {
     if (!interaction.guild) {
-      await interaction.reply({ content: "Cette commande doit être utilisée dans un serveur.", ephemeral: true });
+      await interaction.reply({
+        embeds: [buildErrorEmbed("Cette commande doit être utilisée dans un serveur.")],
+        ephemeral: true
+      });
       return;
     }
 
     const cleaned = word.trim();
     if (!cleaned) {
-      await interaction.reply({ content: "Merci de fournir un mot valide.", ephemeral: true });
+      await interaction.reply({
+        embeds: [buildErrorEmbed("Merci de fournir un mot valide.")],
+        ephemeral: true
+      });
       return;
     }
 
     const me = interaction.guild.members.me;
     const canTimeout = me?.permissions.has(PermissionsBitField.Flags.ModerateMembers);
     if (!canTimeout) {
-      await interaction.reply({ content: "Je n'ai pas la permission de mettre des timeouts.", ephemeral: true });
+      await interaction.reply({
+        embeds: [buildErrorEmbed("Je n'ai pas la permission de mettre des timeouts.")],
+        ephemeral: true
+      });
       return;
     }
 
@@ -37,7 +47,7 @@ export class TrapManager {
     });
 
     await interaction.reply({
-      content: `🪤 La prochaine personne qui dit "${cleaned}" prend 10 minutes.`
+      embeds: [buildInfoEmbed(`🪤 La prochaine personne qui dit "${cleaned}" prend 10 minutes.`)]
     });
   }
 
@@ -57,7 +67,7 @@ export class TrapManager {
     try {
       await member.timeout(TRAP_TIMEOUT_MS, `Trap word triggered: ${trap.word}`);
       await message.channel.send({
-        content: `🪤 ${member} a déclenché le trap et prend 10 minutes.`
+        embeds: [buildInfoEmbed(`🪤 ${member} a déclenché le trap et prend 10 minutes.`)]
       });
     } catch (error) {
       this.logger?.(message.guild.id, `Failed to timeout ${member.user.tag} for trap: ${error?.message || error}`);

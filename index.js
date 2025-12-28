@@ -32,6 +32,10 @@ function buildRoleButtons() {
   return new ActionRowBuilder().addComponents(scrimsButton, compButton);
 }
 
+function buildStatusEmbed(message, color) {
+  return new EmbedBuilder().setDescription(message).setColor(color);
+}
+
 async function sendRoleMessage() {
   const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
@@ -44,37 +48,61 @@ async function handleToggle(interaction, roleId) {
   const guild = interaction.guild;
   const me = guild.members.me || (await guild.members.fetchMe().catch(() => null));
   if (!me) {
-    return interaction.reply({ content: "Membre du bot introuvable.", ephemeral: true });
+    return interaction.reply({
+      embeds: [buildStatusEmbed("Membre du bot introuvable.", 0xed4245)],
+      ephemeral: true
+    });
   }
 
   if (!me.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-    return interaction.reply({ content: "Je n'ai pas la permission Manage Roles.", ephemeral: true });
+    return interaction.reply({
+      embeds: [buildStatusEmbed("Je n'ai pas la permission Manage Roles.", 0xed4245)],
+      ephemeral: true
+    });
   }
 
   const role = guild.roles.cache.get(roleId) || (await guild.roles.fetch(roleId).catch(() => null));
   if (!role) {
-    return interaction.reply({ content: "Rôle introuvable.", ephemeral: true });
+    return interaction.reply({
+      embeds: [buildStatusEmbed("Rôle introuvable.", 0xed4245)],
+      ephemeral: true
+    });
   }
 
   if (me.roles.highest.comparePositionTo(role) <= 0) {
-    return interaction.reply({ content: "Mon rôle est en dessous du rôle à attribuer.", ephemeral: true });
+    return interaction.reply({
+      embeds: [buildStatusEmbed("Mon rôle est en dessous du rôle à attribuer.", 0xed4245)],
+      ephemeral: true
+    });
   }
 
   const member = await guild.members.fetch(interaction.user.id).catch(() => null);
   if (!member) {
-    return interaction.reply({ content: "Membre introuvable.", ephemeral: true });
+    return interaction.reply({
+      embeds: [buildStatusEmbed("Membre introuvable.", 0xed4245)],
+      ephemeral: true
+    });
   }
 
   try {
     if (member.roles.cache.has(role.id)) {
       await member.roles.remove(role.id);
-      return interaction.reply({ content: "Rôle retiré ❌", ephemeral: true });
+      return interaction.reply({
+        embeds: [buildStatusEmbed("Rôle retiré ❌", 0x57f287)],
+        ephemeral: true
+      });
     }
 
     await member.roles.add(role.id);
-    return interaction.reply({ content: "Rôle ajouté ✅", ephemeral: true });
+    return interaction.reply({
+      embeds: [buildStatusEmbed("Rôle ajouté ✅", 0x57f287)],
+      ephemeral: true
+    });
   } catch (error) {
-    return interaction.reply({ content: "Erreur lors de la mise à jour du rôle.", ephemeral: true });
+    return interaction.reply({
+      embeds: [buildStatusEmbed("Erreur lors de la mise à jour du rôle.", 0xed4245)],
+      ephemeral: true
+    });
   }
 }
 

@@ -1,3 +1,5 @@
+import { buildErrorEmbed, buildSuccessEmbed } from "../embeds.js";
+
 export default {
   name: "interactionCreate",
   async execute(interaction) {
@@ -12,16 +14,25 @@ export default {
           interaction.customId === "role_scrims" ? "1451687979189014548" : "1406762832720035891";
         const member = interaction.member;
         if (!member || !interaction.guild) {
-          await interaction.reply({ content: "Impossible de mettre à jour ton rôle.", ephemeral: true });
+          await interaction.reply({
+            embeds: [buildErrorEmbed("Impossible de mettre à jour ton rôle.")],
+            ephemeral: true
+          });
           return;
         }
         const hasRole = member.roles.cache.has(roleId);
         if (hasRole) {
           await member.roles.remove(roleId).catch(() => {});
-          await interaction.reply({ content: "Rôle retiré.", ephemeral: true });
+          await interaction.reply({
+            embeds: [buildSuccessEmbed("Rôle retiré.")],
+            ephemeral: true
+          });
         } else {
           await member.roles.add(roleId).catch(() => {});
-          await interaction.reply({ content: "Rôle ajouté.", ephemeral: true });
+          await interaction.reply({
+            embeds: [buildSuccessEmbed("Rôle ajouté.")],
+            ephemeral: true
+          });
         }
         return;
       }
