@@ -48,6 +48,7 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 bot.trap_words: dict[int, str] = {}
 bot_status = {'ready': False}
 STAFF_ROLE_ID = 1236738451018223768
+VOTEBAN_ROLE_ID = 1454894276768174244
 ROLE_CHANNEL_ID = 1267617798658457732
 ROLE_SCRIMS_ID = 1451687979189014548
 ROLE_COMPETITIVE_ID = 1406762832720035891
@@ -249,6 +250,12 @@ class RoleButtonsView(discord.ui.View):
 
 
 def _can_user_vote(member: discord.Member) -> tuple[bool, str]:
+    required_role = member.guild.get_role(VOTEBAN_ROLE_ID)
+    if required_role and required_role not in member.roles:
+        return False, f"Tu ne peux voter que si tu as le rôle {required_role.mention}."
+    if not required_role:
+        return False, f"Tu ne peux voter que si tu as le rôle <@&{VOTEBAN_ROLE_ID}>."
+
     age = datetime.datetime.utcnow() - member.created_at.replace(tzinfo=None)
     if age < datetime.timedelta(days=14):
         return False, "Votre compte doit avoir au moins 14 jours pour voter."
@@ -615,7 +622,8 @@ async def help_command(ctx: commands.Context):
             '**Modération:**\n'
             '`/purge` - Nettoyer et verrouiller un salon\n'
             '`/unpurge` - Rouvrir un salon verrouillé\n'
-            '`!voteban` - Lancer un vote de bannissement avec raison\n'
+            '`!voteban` - Lancer un vote de bannissement avec raison (expire après 24h)\n'
+            '`!unvoteban` - Annuler votre voteban sur un membre\n'
             '`!votestaff` - Voter pour élire un membre du staff\n\n'
             '**Analytics:**\n'
             '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
@@ -746,7 +754,7 @@ def _build_voteban_status_embed(guild: Optional[discord.Guild], target: discord.
         voter = guild.get_member(int(vote['voter_user_id'])) if guild else None
         voter_name = voter.mention if voter else f"<@{vote['voter_user_id']}>"
         embed.add_field(name=f"Vote #{i}", value=f"{voter_name}\n*{vote['reason'][:100]}*", inline=False)
-    embed.set_footer(text=f"Total: {len(votes)} votes • Expiration: 7 jours")
+    embed.set_footer(text=f"Total: {len(votes)} votes • Expiration: 24h")
     return embed
 
 
@@ -858,6 +866,24 @@ async def votes(ctx: commands.Context):
 
     embed.set_footer(text=f"Total de voix comptabilisées : {sum(entry['total'] for entry in totals)}")
     await ctx.send(embed=embed)
+
+
+@bot.command(name='unvoteban')
+async def unvoteban(ctx: commands.Context, member: discord.Member):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    removed = db.remove_vote_ban(str(ctx.guild.id), str(member.id), str(ctx.author.id))
+    if not removed:
+        await ctx.send(f"Vous n'avez aucun voteban actif contre {member.mention}.")
+        return
+
+    remaining_votes = db.get_vote_bans(str(ctx.guild.id), str(member.id))
+    await ctx.send(
+        f"Votre voteban contre {member.mention} a été annulé. "
+        f"Votes restants: {len(remaining_votes)}."
+    )
 
 
 def _pcsd_main_embed() -> discord.Embed:

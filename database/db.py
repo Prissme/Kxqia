@@ -674,11 +674,11 @@ def add_vote_ban(guild_id: str, target_user_id: str, voter_user_id: str, reason:
         return False
 
 
-def get_vote_bans(guild_id: str, target_user_id: str, days: int = 7) -> list[dict[str, Any]]:
+def get_vote_bans(guild_id: str, target_user_id: str, hours: int = 24) -> list[dict[str, Any]]:
     client = _ensure_client()
     if not client:
         return []
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
     try:
         rows = (
             client.table("vote_bans")
@@ -695,6 +695,25 @@ def get_vote_bans(guild_id: str, target_user_id: str, days: int = 7) -> list[dic
     except Exception as exc:
         logger.error("Erreur get_vote_bans: %s", exc)
         return []
+
+
+def remove_vote_ban(guild_id: str, target_user_id: str, voter_user_id: str) -> bool:
+    client = _ensure_client()
+    if not client:
+        return False
+    try:
+        resp = (
+            client.table("vote_bans")
+            .delete()
+            .eq("guild_id", guild_id)
+            .eq("target_user_id", target_user_id)
+            .eq("voter_user_id", voter_user_id)
+            .execute()
+        )
+        return bool(resp.data)
+    except Exception as exc:
+        logger.error("Erreur remove_vote_ban: %s", exc)
+        return False
 
 
 def get_user_daily_votes(guild_id: str, voter_id: str) -> int:
