@@ -54,9 +54,11 @@ VOTEBAN_ROLE_ID = 1454894276768174244
 ROLE_CHANNEL_ID = 1267617798658457732
 ROLE_SCRIMS_ID = 1451687979189014548
 ROLE_COMPETITIVE_ID = 1406762832720035891
+ROLE_LFN_TEAM_ID = 1454475274296099058
 ROLE_BUTTON_IDS = {
     "role_button_scrims",
     "role_button_competitive",
+    "role_button_lfn_team",
 }
 _background_tasks_started = False
 _role_view_added = False
@@ -104,12 +106,16 @@ def uptime() -> str:
 
 
 def _build_roles_embed(guild: Optional[discord.Guild]) -> discord.Embed:
+    scrims_role = f"<@&{ROLE_SCRIMS_ID}>"
+    competitive_role = f"<@&{ROLE_COMPETITIVE_ID}>"
+    lfn_team_role = f"<@&{ROLE_LFN_TEAM_ID}>"
     embed = discord.Embed(
         title="🎮 Choisis ton mode de jeu !",
         description=(
             "Sélectionne le rôle qui correspond à ta vibe et commence à jouer.\n\n"
-            "**⚔️ Scrims / Ranked** — Pour les joueurs qui veulent grind le ladder.\n"
-            "**🏆 Competitive / LFN** — Pour les équipes et tournois sérieux."
+            f"**⚔️ {scrims_role}** — Pour les joueurs qui veulent grind le ladder.\n"
+            f"**🏆 {competitive_role}** — Pour les équipes et tournois sérieux.\n"
+            f"**🧑‍🤝‍🧑 {lfn_team_role}** — Pour ceux qui cherchent une équipe LFN."
         ),
         color=0x5865F2,
     )
@@ -249,6 +255,14 @@ class RoleButtonsView(discord.ui.View):
     )
     async def competitive_button(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self._toggle_role(interaction, ROLE_COMPETITIVE_ID, "Competitive / LFN")
+
+    @discord.ui.button(
+        label="🧑‍🤝‍🧑 LFN Team",
+        style=discord.ButtonStyle.secondary,
+        custom_id="role_button_lfn_team",
+    )
+    async def lfn_team_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle_role(interaction, ROLE_LFN_TEAM_ID, "Recherche équipe LFN")
 
 
 def _can_user_vote(member: discord.Member) -> tuple[bool, str, bool]:
