@@ -11,7 +11,6 @@ from typing import Iterable, Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
-from discord.utils import escape_mentions
 from flask import Flask, jsonify, render_template, request, send_file
 from flask_socketio import SocketIO
 
@@ -45,12 +44,14 @@ intents.members = True
 intents.voice_states = True
 intents.messages = True
 
-bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=commands.when_mentioned_or('!', 'e!'), intents=intents, help_command=None)
 bot.trap_words: dict[int, str] = {}
 custom_voice_manager = CustomVoiceManager(bot)
 bot_status = {'ready': False}
-STAFF_ROLE_ID = 1236738451018223768
-VOTEBAN_ROLE_ID = 1454894276768174244
+LEGACY_VOTESTAFF_ROLE_ID = 1236738451018223768
+CREDIT_REWARD_ROLE_ID = 1236739808844320829
+CREDIT_DEFAULT = 5
+CREDIT_PROMO_THRESHOLD = 10
 ROLE_CHANNEL_ID = 1267617798658457732
 ROLE_SCRIMS_ID = 1451687979189014548
 ROLE_COMPETITIVE_ID = 1406762832720035891
@@ -251,240 +252,66 @@ class RoleButtonsView(discord.ui.View):
         await self._toggle_role(interaction, ROLE_COMPETITIVE_ID, "Competitive / LFN")
 
 
-def _can_user_vote(member: discord.Member) -> tuple[bool, str, bool]:
-    required_role = member.guild.get_role(VOTEBAN_ROLE_ID)
-    if required_role and required_role not in member.roles:
-        return False, f"Tu ne peux voter que si tu as le rôle {required_role.mention}.", True
-    if not required_role:
-        return False, f"Tu ne peux voter que si tu as le rôle <@&{VOTEBAN_ROLE_ID}>.", True
-
-    age = datetime.datetime.utcnow() - member.created_at.replace(tzinfo=None)
-    if age < datetime.timedelta(days=14):
-        return False, "Votre compte doit avoir au moins 14 jours pour voter.", False
-
-    total_messages = db.count_user_messages(str(member.id), str(member.guild.id))
-    if total_messages < 100:
-        return (
-            False,
-            f"Vous devez avoir envoyé au moins 100 messages sur le serveur (actuel: {total_messages}).",
-            False,
-        )
-
-    return True, str(total_messages), False
+def _role_is_assignable(bot_member: discord.Member, role: discord.Role) -> bool:
+    return not role.managed and role < bot_member.top_role
 
 
-def _prune_votes_without_role(guild: discord.Guild, target_user_id: str) -> int:
-    required_role = guild.get_role(VOTEBAN_ROLE_ID)
-    if required_role is None:
-        return 0
-    removed = 0
-    for vote in db.get_vote_bans(str(guild.id), target_user_id):
-        voter_id = vote.get("voter_user_id")
-        if not voter_id:
-            continue
-        voter = guild.get_member(int(voter_id))
-        if voter is None or required_role not in voter.roles:
-            if db.remove_vote_ban(str(guild.id), target_user_id, str(voter_id)):
-                removed += 1
-    if removed:
-        logger.info("Votes supprimés faute de rôle requis: %s", removed)
-    return removed
+def _get_bot_member(guild: discord.Guild) -> Optional[discord.Member]:
+    return guild.me or guild.get_member(bot.user.id)
 
 
-def _prune_staff_votes_without_role(guild: discord.Guild) -> int:
-    required_role = guild.get_role(VOTEBAN_ROLE_ID)
-    if required_role is None:
-        return 0
-    removed = 0
-    for vote in db.get_staff_votes(str(guild.id)):
-        voter_id = vote.get("voter_user_id")
-        if not voter_id:
-            continue
-        voter = guild.get_member(int(voter_id))
-        if voter is None or required_role not in voter.roles:
-            if db.remove_staff_vote(str(guild.id), str(voter_id)):
-                removed += 1
-    if removed:
-        logger.info("Votes staff supprimés faute de rôle requis: %s", removed)
-    return removed
+def _get_credit_roles(guild: discord.Guild) -> tuple[Optional[discord.Role], Optional[discord.Role]]:
+    legacy_role = guild.get_role(LEGACY_VOTESTAFF_ROLE_ID)
+    reward_role = guild.get_role(CREDIT_REWARD_ROLE_ID)
+    return legacy_role, reward_role
 
 
-def calculate_vote_weight(member: Optional[discord.Member], total_messages: int) -> float:
-    weight = 1.0
-    if member:
-        account_age_days = (datetime.datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
-        if account_age_days > 365:
-            weight += 0.5
-        elif account_age_days > 180:
-            weight += 0.3
-        elif account_age_days > 90:
-            weight += 0.1
-    if total_messages > 5000:
-        weight += 0.5
-    elif total_messages > 1000:
-        weight += 0.3
-    elif total_messages > 500:
-        weight += 0.1
-    return min(weight, 2.0)
+async def _sync_credit_roles(member: discord.Member, credits: int) -> list[str]:
+    guild = member.guild
+    updates: list[str] = []
+    bot_member = _get_bot_member(guild)
+    if bot_member is None or not bot_member.guild_permissions.manage_roles:
+        return ["Permissions insuffisantes pour gérer les rôles."]
 
+    legacy_role, reward_role = _get_credit_roles(guild)
 
-async def _apply_vote_action(
-    ctx: commands.Context,
-    member: discord.Member,
-    total_votes: int,
-    vote_reason: str,
-) -> Optional[str]:
-    thresholds: list[tuple[int, Optional[int]]] = [
-        (50, None),  # ban définitif
-        (25, 1440),  # mute 1 jour
-        (12, 120),  # mute 2h
-        (5, 20),  # mute 20 minutes
-    ]
+    if legacy_role and _role_is_assignable(bot_member, legacy_role):
+        if credits <= 0 and legacy_role in member.roles:
+            try:
+                await member.remove_roles(legacy_role, reason="Crédits épuisés")
+                updates.append("Rôle legacy retiré (crédits à 0).")
+            except discord.Forbidden:
+                updates.append("Permissions insuffisantes pour retirer le rôle legacy.")
+            except discord.HTTPException:
+                updates.append("Impossible de retirer le rôle legacy pour le moment.")
+        elif credits > 0 and legacy_role not in member.roles:
+            try:
+                await member.add_roles(legacy_role, reason="Crédits attribués")
+                updates.append("Rôle legacy ajouté.")
+            except discord.Forbidden:
+                updates.append("Permissions insuffisantes pour ajouter le rôle legacy.")
+            except discord.HTTPException:
+                updates.append("Impossible d'ajouter le rôle legacy pour le moment.")
+    elif legacy_role is None:
+        updates.append("Rôle legacy introuvable.")
+    else:
+        updates.append("Rôle legacy non attribuable (hiérarchie Discord).")
 
-    target_threshold: Optional[tuple[int, Optional[int]]] = None
-    for threshold, minutes in thresholds:
-        if total_votes >= threshold:
-            target_threshold = (threshold, minutes)
-            break
+    if reward_role and _role_is_assignable(bot_member, reward_role):
+        if credits >= CREDIT_PROMO_THRESHOLD and reward_role not in member.roles:
+            try:
+                await member.add_roles(reward_role, reason="Crédits atteints")
+                updates.append("Rôle récompense ajouté (10 crédits).")
+            except discord.Forbidden:
+                updates.append("Permissions insuffisantes pour ajouter le rôle récompense.")
+            except discord.HTTPException:
+                updates.append("Impossible d'ajouter le rôle récompense pour le moment.")
+    elif reward_role is None:
+        updates.append("Rôle récompense introuvable.")
+    else:
+        updates.append("Rôle récompense non attribuable (hiérarchie Discord).")
 
-    if target_threshold is None:
-        return None
-
-    threshold, duration_minutes = target_threshold
-    action_reason = f"Sanction votée ({total_votes} votes) - {vote_reason}"
-
-    if duration_minutes is None:
-        try:
-            await ctx.guild.ban(member, reason=action_reason, delete_message_days=0)
-        except discord.Forbidden:
-            await ctx.send("Je n'ai pas la permission de bannir cet utilisateur.")
-            return None
-        except discord.HTTPException:
-            await ctx.send("Impossible de bannir cet utilisateur pour le moment.")
-            return None
-
-        db.add_moderation_action(
-            'voteban',
-            str(ctx.channel.id),
-            ctx.channel.name,
-            str(ctx.author.id),
-            str(ctx.author),
-            vote_reason,
-            {
-                'target_id': str(member.id),
-                'target_name': str(member),
-                'votes': total_votes,
-                'duration_minutes': duration_minutes,
-            },
-        )
-        db.log_event(
-            'moderation',
-            'warning',
-            'Bannissement par vote appliqué',
-            user_id=str(ctx.author.id),
-            user_name=str(ctx.author),
-            channel_id=str(ctx.channel.id),
-            guild_id=str(ctx.guild.id),
-            metadata={
-                'target_id': str(member.id),
-                'target_name': str(member),
-                'votes': total_votes,
-                'duration_minutes': duration_minutes,
-            },
-        )
-        db.clear_vote_bans(str(ctx.guild.id), str(member.id))
-        return f"🚫 {member.mention} est banni définitivement ({threshold} votes)."
-
-    try:
-        await member.timeout(datetime.timedelta(minutes=duration_minutes), reason=action_reason)
-    except discord.Forbidden:
-        await ctx.send("Je n'ai pas la permission de réduire cet utilisateur au silence.")
-        return None
-    except discord.HTTPException:
-        await ctx.send("Impossible d'appliquer le mute voté pour le moment.")
-        return None
-
-    db.add_moderation_action(
-        'votemute',
-        str(ctx.channel.id),
-        ctx.channel.name,
-        str(ctx.author.id),
-        str(ctx.author),
-        vote_reason,
-        {
-            'target_id': str(member.id),
-            'target_name': str(member),
-            'votes': total_votes,
-            'duration_minutes': duration_minutes,
-        },
-    )
-    db.log_event(
-        'moderation',
-        'warning',
-        'Mute par vote appliqué',
-        user_id=str(ctx.author.id),
-        user_name=str(ctx.author),
-        channel_id=str(ctx.channel.id),
-        guild_id=str(ctx.guild.id),
-        metadata={
-            'target_id': str(member.id),
-            'target_name': str(member),
-            'votes': total_votes,
-            'duration_minutes': duration_minutes,
-        },
-    )
-
-    return f"🔇 {member.mention} est mute pour {duration_minutes} minutes ({threshold} votes)."
-
-
-async def _refresh_staff_role(guild: discord.Guild) -> str:
-    role = guild.get_role(STAFF_ROLE_ID)
-    if role is None:
-        return "Rôle staff introuvable sur ce serveur."
-
-    _prune_staff_votes_without_role(guild)
-    totals = db.get_staff_vote_totals(str(guild.id))
-    if not totals:
-        return "Aucun vote enregistré pour le moment."
-
-    winners = []
-    for entry in totals[:2]:
-        member = guild.get_member(int(entry['target_user_id']))
-        if member is None:
-            continue
-        winners.append(member)
-
-    if not winners:
-        return "Les membres en tête ne sont plus présents sur le serveur."
-
-    changes: list[str] = []
-    for member in winners:
-        if role in member.roles:
-            continue
-        try:
-            await member.add_roles(role, reason="Attribué via vote staff")
-            changes.append(f"{member.display_name} reçoit le rôle staff.")
-        except discord.Forbidden:
-            return "Permissions insuffisantes pour attribuer le rôle staff."
-        except discord.HTTPException:
-            return "Impossible d'attribuer le rôle staff pour le moment."
-
-    for member in list(role.members):
-        if member in winners:
-            continue
-        try:
-            await member.remove_roles(role, reason="Rôle staff réattribué via vote")
-            changes.append(f"{member.display_name} perd le rôle staff.")
-        except discord.Forbidden:
-            return "Permissions insuffisantes pour retirer le rôle staff à certains membres."
-        except discord.HTTPException:
-            return "Impossible de mettre à jour les rôles staff pour le moment."
-
-    if changes:
-        return " ".join(changes)
-
-    winners_label = ", ".join(member.display_name for member in winners)
-    return f"{winners_label} restent en tête du vote staff."
+    return updates
 
 
 # --- Discord helpers
@@ -679,16 +506,14 @@ async def help_command(ctx: commands.Context):
             '**Modération:**\n'
             '`/purge` - Nettoyer et verrouiller un salon\n'
             '`/unpurge` - Rouvrir un salon verrouillé\n'
-            '`!voteban` - Lancer un vote de bannissement avec raison (expire après 24h)\n'
-            '`!unvoteban` - Annuler votre voteban sur un membre\n'
-            '`!votestaff` - Voter pour élire un membre du staff\n\n'
+            '`!guidetest @membre` - Ajouter le rôle legacy et 5 crédits\n'
+            '`e!addcredit @membre <raison>` - Ajouter un crédit\n'
+            '`e!removecredit @membre <raison>` - Retirer un crédit\n\n'
             '**Analytics:**\n'
             '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
             '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
             '**Utilitaires:**\n'
-            '`!ping` - Vérifier la latence du bot\n'
-            '`!votes` - Voir le classement des votes staff\n'
-            '`!status` - Voir le détail des votes actifs contre un membre'
+            '`!ping` - Vérifier la latence du bot'
         ),
         color=0x5865F2
     )
@@ -700,259 +525,75 @@ async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
 
 
-@bot.command(name='voteban')
-async def voteban(ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None):
+@bot.command(name='guidetest')
+@commands.has_permissions(administrator=True)
+async def guidetest(ctx: commands.Context, member: discord.Member):
     if ctx.guild is None:
         await ctx.send('Cette commande doit être utilisée sur un serveur.')
         return
 
+    bot_member = _get_bot_member(ctx.guild)
+    if bot_member is None or not bot_member.guild_permissions.manage_roles:
+        await ctx.send("Je n'ai pas la permission de gérer les rôles.")
+        return
+
+    legacy_role, _ = _get_credit_roles(ctx.guild)
+    if legacy_role is None:
+        await ctx.send("Le rôle legacy est introuvable.")
+        return
+    if not _role_is_assignable(bot_member, legacy_role):
+        await ctx.send("Je ne peux pas attribuer le rôle legacy (hiérarchie Discord).")
+        return
+
+    db.set_user_credits(str(ctx.guild.id), str(member.id), CREDIT_DEFAULT)
+    if legacy_role not in member.roles:
+        try:
+            await member.add_roles(legacy_role, reason="Ajout via !guidetest")
+        except discord.Forbidden:
+            await ctx.send("Permissions insuffisantes pour attribuer le rôle legacy.")
+            return
+        except discord.HTTPException:
+            await ctx.send("Impossible d'attribuer le rôle legacy pour le moment.")
+            return
+
+    updates = await _sync_credit_roles(member, CREDIT_DEFAULT)
+    updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
+    await ctx.send(f"✅ {member.mention} a reçu {CREDIT_DEFAULT} crédits.{updates_text}")
+
+
+@bot.command(name='addcredit')
+@commands.has_permissions(administrator=True)
+async def addcredit(ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
     if reason is None or not reason.strip():
-        await ctx.send("Merci de fournir une raison : `!voteban @membre <raison>`.")
+        await ctx.send('Merci de fournir une raison : `e!addcredit @membre <raison>`.')
         return
 
-    if member.bot:
-        await ctx.send("Impossible de voter pour bannir un bot.")
-        return
-
-    if member == ctx.author:
-        await ctx.send("Vous ne pouvez pas voter contre vous-même.")
-        return
-
-    if member.guild_permissions.manage_messages or member.guild_permissions.kick_members:
-        await ctx.send("Impossible de voter contre un modérateur.")
-        return
-
-    last_sanction = db.get_last_voteban_sanction(str(ctx.guild.id), str(member.id))
-    if last_sanction and (datetime.datetime.utcnow() - last_sanction) < datetime.timedelta(hours=24):
-        await ctx.send("Ce membre a déjà été sanctionné récemment. Cooldown de 24h en cours.")
-        return
-
-    can_vote, detail, use_embed = _can_user_vote(ctx.author)
-    if not can_vote:
-        if use_embed:
-            embed = discord.Embed(description=detail, color=0xED4245)
-            await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-        else:
-            await ctx.send(detail)
-        return
-
-    daily_votes = db.get_user_daily_votes(str(ctx.guild.id), str(ctx.author.id))
-    if daily_votes >= 3:
-        await ctx.send("Limite de 3 votes par jour atteinte.")
-        return
-
-    cleaned_reason = escape_mentions(reason).strip()
-    inserted = db.add_vote_ban(str(ctx.guild.id), str(member.id), str(ctx.author.id), cleaned_reason)
-    if not inserted:
-        await ctx.send("Vous avez déjà voté pour ce bannissement.")
-        return
-
-    _prune_votes_without_role(ctx.guild, str(member.id))
-    all_votes = db.get_vote_bans(str(ctx.guild.id), str(member.id))
-    total_votes = len(all_votes)
-    total_weight = sum(
-        calculate_vote_weight(
-            ctx.guild.get_member(int(v['voter_user_id'])),
-            db.count_user_messages(v['voter_user_id'], str(ctx.guild.id)),
-        )
-        for v in all_votes
-    )
-
-    db.log_event(
-        'moderation',
-        'info',
-        'Vote de bannissement enregistré',
-        user_id=str(ctx.author.id),
-        user_name=str(ctx.author),
-        channel_id=str(ctx.channel.id),
-        guild_id=str(ctx.guild.id),
-        metadata={
-            'target_id': str(member.id),
-            'target_name': str(member),
-            'votes': total_votes,
-            'reason': cleaned_reason,
-        },
-    )
-
-    status_lines = [
-        f'🗳️ {ctx.author.mention} a voté pour bannir {member.mention} ({total_votes}/50).',
-        f'Poids cumulé : {total_weight:.1f}',
-        f'Raison : {cleaned_reason}',
-        'Seuils : 5 votes = 20 min de mute, 12 votes = 2h de mute, 25 votes = 1 jour de mute, 50 votes = ban définitif.'
-    ]
-
-    action_feedback = await _apply_vote_action(ctx, member, int(total_weight), cleaned_reason)
-
-    if action_feedback:
-        status_lines.append(action_feedback)
-    else:
-        status_lines.append("Aucune sanction appliquée pour le moment.")
-
-    reasons_list = '\n'.join(
-        f"- {ctx.guild.get_member(int(v['voter_user_id'])).mention if ctx.guild.get_member(int(v['voter_user_id'])) else v['voter_user_id']}: {v['reason']}"
-        for v in all_votes
-    )
-    status_lines.append('Votes actuels :\n' + reasons_list)
-
-    await ctx.send('\n'.join(status_lines))
-
-
-def _format_staff_leaderboard(guild: discord.Guild, totals: list[dict[str, int]]) -> str:
-    lines = []
-    for entry in totals[:5]:
-        target_member = guild.get_member(int(entry['target_user_id']))
-        label = target_member.mention if target_member else entry['target_user_id']
-        lines.append(f"- {label}: {entry['total']} voix")
-    return '\n'.join(lines)
-
-
-def _build_voteban_status_embed(guild: Optional[discord.Guild], target: discord.Member) -> Optional[discord.Embed]:
-    if guild:
-        _prune_votes_without_role(guild, str(target.id))
-    votes = db.get_vote_bans(str(guild.id), str(target.id)) if guild else []
-    if not votes:
-        return None
-
-    embed = discord.Embed(title=f"📊 Votes contre {target.display_name}", color=0x5865f2)
-    for i, vote in enumerate(votes[:10], 1):
-        voter = guild.get_member(int(vote['voter_user_id'])) if guild else None
-        voter_name = voter.mention if voter else f"<@{vote['voter_user_id']}>"
-        embed.add_field(name=f"Vote #{i}", value=f"{voter_name}\n*{vote['reason'][:100]}*", inline=False)
-    embed.set_footer(text=f"Total: {len(votes)} votes • Expiration: 24h")
-    return embed
-
-
-@bot.command(name='votestaff')
-async def votestaff(ctx: commands.Context, member: discord.Member):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-
-    if member.bot:
-        await ctx.send("Impossible de voter pour un bot.")
-        return
-
-    if member == ctx.author:
-        await ctx.send("Vous ne pouvez pas voter pour vous-même.")
-        return
-
-    can_vote, detail, use_embed = _can_user_vote(ctx.author)
-    if not can_vote:
-        if use_embed:
-            embed = discord.Embed(description=detail, color=0xED4245)
-            await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-        else:
-            await ctx.send(detail)
-        return
-
-    _prune_staff_votes_without_role(ctx.guild)
-    previous_vote = db.get_staff_vote_for_user(str(ctx.guild.id), str(ctx.author.id))
-    db.upsert_staff_vote(str(ctx.guild.id), str(member.id), str(ctx.author.id))
-
-    totals = db.get_staff_vote_totals(str(ctx.guild.id))
-    candidate_total = next(
-        (entry['total'] for entry in totals if entry['target_user_id'] == str(member.id)),
-        1,
-    )
-
-    db.log_event(
-        'moderation',
-        'info',
-        'Vote staff enregistré',
-        user_id=str(ctx.author.id),
-        user_name=str(ctx.author),
-        channel_id=str(ctx.channel.id),
-        guild_id=str(ctx.guild.id),
-        metadata={
-            'target_id': str(member.id),
-            'target_name': str(member),
-            'previous_vote': previous_vote,
-            'votes': candidate_total,
-        },
-    )
-
-    leaderboard = _format_staff_leaderboard(ctx.guild, totals)
-    refresh_feedback = await _refresh_staff_role(ctx.guild)
-
-    embed = discord.Embed(title="🗳️ Vote staff", color=0x5865f2)
-    embed.description = f"{ctx.author.mention} vote pour {member.mention} comme staff."
-    embed.add_field(
-        name="Total pour le candidat",
-        value=f"{candidate_total} voix",
-        inline=False,
-    )
-
-    if previous_vote and previous_vote != str(member.id):
-        embed.add_field(name="Mise à jour", value="Votre vote précédent a été mis à jour.", inline=False)
-    elif not previous_vote:
-        embed.add_field(name="Premier vote", value="C'est votre premier vote staff.", inline=False)
-
-    if leaderboard:
-        embed.add_field(name="Classement actuel", value=leaderboard, inline=False)
-
-    embed.set_footer(text=refresh_feedback)
-    await ctx.send(embed=embed)
-
-
-@bot.command(name='votestatus')
-async def votestatus(ctx: commands.Context, member: Optional[discord.Member] = None):
-    target = member or ctx.author
-    embed = _build_voteban_status_embed(ctx.guild, target)
-    if not embed:
-        await ctx.send(f"Aucun vote actif contre {target.mention}.")
-        return
-
-    await ctx.send(embed=embed)
-
-
-@bot.command(name='status')
-async def status(ctx: commands.Context, member: Optional[discord.Member] = None):
-    target = member or ctx.author
-    embed = _build_voteban_status_embed(ctx.guild, target)
-    if not embed:
-        await ctx.send(f"Aucun vote actif contre {target.mention}.")
-        return
-
-    await ctx.send(embed=embed)
-
-
-@bot.command(name='votes')
-async def votes(ctx: commands.Context):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-
-    _prune_staff_votes_without_role(ctx.guild)
-    totals = db.get_staff_vote_totals(str(ctx.guild.id))
-    if not totals:
-        await ctx.send("Aucun vote staff enregistré pour le moment. Utilisez `!votestaff @membre` pour voter.")
-        return
-
-    embed = discord.Embed(title='🏅 Classement des votes staff', color=0x5865f2)
-    for rank, entry in enumerate(totals[:10], 1):
-        member = ctx.guild.get_member(int(entry['target_user_id']))
-        label = member.mention if member else f"<@{entry['target_user_id']}>"
-        embed.add_field(name=f"#{rank}", value=f"{label} — {entry['total']} voix", inline=False)
-
-    embed.set_footer(text=f"Total de voix comptabilisées : {sum(entry['total'] for entry in totals)}")
-    await ctx.send(embed=embed)
-
-
-@bot.command(name='unvoteban')
-async def unvoteban(ctx: commands.Context, member: discord.Member):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-
-    removed = db.remove_vote_ban(str(ctx.guild.id), str(member.id), str(ctx.author.id))
-    if not removed:
-        await ctx.send(f"Vous n'avez aucun voteban actif contre {member.mention}.")
-        return
-
-    remaining_votes = db.get_vote_bans(str(ctx.guild.id), str(member.id))
+    new_credits = db.increment_user_credits(str(ctx.guild.id), str(member.id), 1)
+    updates = await _sync_credit_roles(member, new_credits)
+    updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
     await ctx.send(
-        f"Votre voteban contre {member.mention} a été annulé. "
-        f"Votes restants: {len(remaining_votes)}."
+        f"✅ {member.mention} gagne 1 crédit (total: {new_credits}). Raison : {reason.strip()}.{updates_text}"
+    )
+
+
+@bot.command(name='removecredit')
+@commands.has_permissions(administrator=True)
+async def removecredit(ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+    if reason is None or not reason.strip():
+        await ctx.send('Merci de fournir une raison : `e!removecredit @membre <raison>`.')
+        return
+
+    new_credits = db.increment_user_credits(str(ctx.guild.id), str(member.id), -1)
+    updates = await _sync_credit_roles(member, new_credits)
+    updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
+    await ctx.send(
+        f"⚠️ {member.mention} perd 1 crédit (total: {new_credits}). Raison : {reason.strip()}.{updates_text}"
     )
 
 

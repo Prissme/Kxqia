@@ -654,225 +654,49 @@ def remove_trust_level(user_id: str) -> None:
         save_config(Config.from_mapping(data))
 
 
-# SECTION 5 - VOTES
+# SECTION 5 - CREDITS
 
-def add_vote_ban(guild_id: str, target_user_id: str, voter_user_id: str, reason: str) -> bool:
-    client = _ensure_client()
-    if not client:
-        return False
-    payload = {
-        "guild_id": guild_id,
-        "target_user_id": target_user_id,
-        "voter_user_id": voter_user_id,
-        "reason": reason,
-    }
-    try:
-        client.table("vote_bans").insert(payload).execute()
-        return True
-    except Exception as exc:
-        logger.error("Erreur add_vote_ban: %s", exc)
-        return False
-
-
-def get_vote_bans(guild_id: str, target_user_id: str, hours: int = 24) -> list[dict[str, Any]]:
-    client = _ensure_client()
-    if not client:
-        return []
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
-    try:
-        rows = (
-            client.table("vote_bans")
-            .select("guild_id,target_user_id,voter_user_id,reason,created_at")
-            .eq("guild_id", guild_id)
-            .eq("target_user_id", target_user_id)
-            .gte("created_at", cutoff.isoformat())
-            .order("created_at", desc=True)
-            .execute()
-            .data
-            or []
-        )
-        return rows
-    except Exception as exc:
-        logger.error("Erreur get_vote_bans: %s", exc)
-        return []
-
-
-def remove_vote_ban(guild_id: str, target_user_id: str, voter_user_id: str) -> bool:
-    client = _ensure_client()
-    if not client:
-        return False
-    try:
-        resp = (
-            client.table("vote_bans")
-            .delete()
-            .eq("guild_id", guild_id)
-            .eq("target_user_id", target_user_id)
-            .eq("voter_user_id", voter_user_id)
-            .execute()
-        )
-        return bool(resp.data)
-    except Exception as exc:
-        logger.error("Erreur remove_vote_ban: %s", exc)
-        return False
-
-
-def get_user_daily_votes(guild_id: str, voter_id: str) -> int:
+def get_user_credits(guild_id: str, user_id: str) -> int:
     client = _ensure_client()
     if not client:
         return 0
     try:
-        today = date.today().isoformat()
         resp = (
-            client.table("vote_bans")
-            .select("target_user_id")
+            client.table("user_credits")
+            .select("credits")
             .eq("guild_id", guild_id)
-            .eq("voter_user_id", voter_id)
-            .gte("created_at", today)
-            .execute()
-        )
-        distinct_targets = {row.get("target_user_id") for row in (resp.data or []) if row.get("target_user_id")}
-        return len(distinct_targets)
-    except Exception as exc:
-        logger.error("Erreur get_user_daily_votes: %s", exc)
-        return 0
-
-
-def clear_vote_bans(guild_id: str, target_user_id: str) -> None:
-    client = _ensure_client()
-    if not client:
-        return
-    try:
-        client.table("vote_bans").delete().eq("guild_id", guild_id).eq("target_user_id", target_user_id).execute()
-    except Exception as exc:
-        logger.error("Erreur clear_vote_bans: %s", exc)
-
-
-def get_last_voteban_sanction(guild_id: str, target_user_id: str) -> Optional[datetime]:
-    client = _ensure_client()
-    if not client:
-        return None
-    try:
-        resp = (
-            client.table("moderation_actions")
-            .select("timestamp,action_type,details,guild_id")
-            .in_("action_type", ["voteban", "votemute"])
-            .execute()
-        )
-        matches = []
-        for row in resp.data or []:
-            details = row.get("details") or {}
-            target_id = details.get("target_id") if isinstance(details, dict) else None
-            if target_id != target_user_id:
-                continue
-            if row.get("guild_id") not in (None, guild_id):
-                continue
-            ts = row.get("timestamp")
-            if ts:
-                matches.append(ts)
-        if not matches:
-            return None
-        return datetime.fromisoformat(sorted(matches, reverse=True)[0])
-    except Exception as exc:
-        logger.error("Erreur get_last_voteban_sanction: %s", exc)
-        return None
-
-
-def upsert_staff_vote(guild_id: str, target_user_id: str, voter_user_id: str) -> None:
-    client = _ensure_client()
-    if not client:
-        return
-    try:
-        client.table("staff_votes").upsert(
-            {
-                "guild_id": guild_id,
-                "target_user_id": target_user_id,
-                "voter_user_id": voter_user_id,
-            },
-            on_conflict="guild_id,voter_user_id",
-        ).execute()
-    except Exception as exc:
-        logger.error("Erreur upsert_staff_vote: %s", exc)
-
-
-def get_staff_vote_for_user(guild_id: str, voter_user_id: str) -> Optional[str]:
-    client = _ensure_client()
-    if not client:
-        return None
-    try:
-        resp = (
-            client.table("staff_votes")
-            .select("target_user_id")
-            .eq("guild_id", guild_id)
-            .eq("voter_user_id", voter_user_id)
+            .eq("user_id", user_id)
             .limit(1)
             .execute()
         )
         if resp.data:
-            return resp.data[0].get("target_user_id")
-        return None
+            return int(resp.data[0].get("credits") or 0)
+        return 0
     except Exception as exc:
-        logger.error("Erreur get_staff_vote_for_user: %s", exc)
-        return None
+        logger.error("Erreur get_user_credits: %s", exc)
+        return 0
 
 
-def get_staff_votes(guild_id: str) -> list[dict[str, Any]]:
+def set_user_credits(guild_id: str, user_id: str, credits: int) -> int:
     client = _ensure_client()
     if not client:
-        return []
+        return credits
+    payload = {
+        "guild_id": guild_id,
+        "user_id": user_id,
+        "credits": int(credits),
+    }
     try:
-        rows = (
-            client.table("staff_votes")
-            .select("guild_id,target_user_id,voter_user_id")
-            .eq("guild_id", guild_id)
-            .execute()
-            .data
-            or []
-        )
-        return rows
+        client.table("user_credits").upsert(payload, on_conflict="guild_id,user_id").execute()
     except Exception as exc:
-        logger.error("Erreur get_staff_votes: %s", exc)
-        return []
+        logger.error("Erreur set_user_credits: %s", exc)
+    return int(credits)
 
 
-def remove_staff_vote(guild_id: str, voter_user_id: str) -> bool:
-    client = _ensure_client()
-    if not client:
-        return False
-    try:
-        resp = (
-            client.table("staff_votes")
-            .delete()
-            .eq("guild_id", guild_id)
-            .eq("voter_user_id", voter_user_id)
-            .execute()
-        )
-        return bool(resp.data)
-    except Exception as exc:
-        logger.error("Erreur remove_staff_vote: %s", exc)
-        return False
-
-
-def get_staff_vote_totals(guild_id: str) -> list[dict[str, Any]]:
-    client = _ensure_client()
-    if not client:
-        return []
-    try:
-        resp = (
-            client.table("staff_votes")
-            .select("target_user_id")
-            .eq("guild_id", guild_id)
-            .execute()
-        )
-        counts: dict[str, int] = {}
-        for row in resp.data or []:
-            target = row.get("target_user_id")
-            if target:
-                counts[target] = counts.get(target, 0) + 1
-        sorted_counts = sorted(counts.items(), key=lambda item: item[1], reverse=True)
-        return [{"target_user_id": target, "total": total} for target, total in sorted_counts]
-    except Exception as exc:
-        logger.error("Erreur get_staff_vote_totals: %s", exc)
-        return []
+def increment_user_credits(guild_id: str, user_id: str, delta: int) -> int:
+    current = get_user_credits(guild_id, user_id)
+    next_value = max(0, current + int(delta))
+    return set_user_credits(guild_id, user_id, next_value)
 
 
 # SECTION 6 - MESSAGES
@@ -897,20 +721,7 @@ def count_user_messages(user_id: str, guild_id: Optional[str] = None) -> int:
         return 0
 
 
-# SECTION 7 - CLEANUP
-
-def cleanup_old_votes(days: int = 30) -> None:
-    client = _ensure_client()
-    if not client:
-        return
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    try:
-        client.table("vote_bans").delete().lt("created_at", cutoff.isoformat()).execute()
-    except Exception as exc:
-        logger.error("Erreur cleanup_old_votes: %s", exc)
-
-
-# SECTION 8 - EXPORT
+# SECTION 7 - EXPORT
 
 def export_table(table: str) -> Iterable[dict]:
     client = _ensure_client()
