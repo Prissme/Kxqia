@@ -4,10 +4,12 @@ require('dotenv').config();
 const CHANNEL_ID = '1267617798658457732';
 const ROLE_SCRIMS = '1451687979189014548';
 const ROLE_COMP = '1406762832720035891';
+const ROLE_LFN_NEWS = '1455197400560832676';
 const ROLE_LFN_TEAM = '1454475274296099058';
 
 const BUTTON_SCRIMS = 'toggle_role_scrims_ranked';
 const BUTTON_COMP = 'toggle_role_competitive';
+const BUTTON_LFN_NEWS = 'toggle_role_lfn_news';
 const BUTTON_LFN_TEAM = 'toggle_role_lfn_team';
 const SAFE_ALLOWED_MENTIONS = { parse: [] };
 
@@ -23,7 +25,8 @@ function buildRoleEmbed() {
         'Clique sur un bouton pour activer ou retirer un rôle (opt-in).',
         '',
         `• ⚔️ <@&${ROLE_SCRIMS}> — Scrims / Ranked`,
-        `• 🏆 <@&${ROLE_COMP}> — Competitive / LFN`,
+        `• 🏆 <@&${ROLE_COMP}> — Competitive`,
+        `• 📰 <@&${ROLE_LFN_NEWS}> — Toutes les news intéressantes sur la LFN`,
         `• 🤝 <@&${ROLE_LFN_TEAM}> — Recherche équipe LFN`,
       ].join('\n')
     );
@@ -40,12 +43,17 @@ function buildRoleButtons() {
     .setLabel('🏆 Competitive')
     .setStyle(ButtonStyle.Success);
 
+  const lfnNewsButton = new ButtonBuilder()
+    .setCustomId(BUTTON_LFN_NEWS)
+    .setLabel('📰 LFN')
+    .setStyle(ButtonStyle.Secondary);
+
   const lfnTeamButton = new ButtonBuilder()
     .setCustomId(BUTTON_LFN_TEAM)
     .setLabel('🤝 LFN team')
     .setStyle(ButtonStyle.Secondary);
 
-  return new ActionRowBuilder().addComponents(scrimsButton, compButton, lfnTeamButton);
+  return new ActionRowBuilder().addComponents(scrimsButton, compButton, lfnNewsButton, lfnTeamButton);
 }
 
 function buildStatusEmbed(message, color) {
@@ -149,6 +157,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (interaction.customId === BUTTON_COMP) {
     return handleToggle(interaction, ROLE_COMP);
+  }
+
+  if (interaction.customId === BUTTON_LFN_NEWS) {
+    return handleToggle(interaction, ROLE_LFN_NEWS);
   }
 
   if (interaction.customId === BUTTON_LFN_TEAM) {

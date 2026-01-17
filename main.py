@@ -55,9 +55,11 @@ CREDIT_PROMO_THRESHOLD = 10
 ROLE_CHANNEL_ID = 1267617798658457732
 ROLE_SCRIMS_ID = 1451687979189014548
 ROLE_COMPETITIVE_ID = 1406762832720035891
+ROLE_LFN_NEWS_ID = 1455197400560832676
 ROLE_BUTTON_IDS = {
     "role_button_scrims",
     "role_button_competitive",
+    "role_button_lfn_news",
 }
 _background_tasks_started = False
 _role_view_added = False
@@ -110,7 +112,8 @@ def _build_roles_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         description=(
             "Sélectionne le rôle qui correspond à ta vibe et commence à jouer.\n\n"
             "**⚔️ Scrims / Ranked** — Pour les joueurs qui veulent grind le ladder.\n"
-            "**🏆 Competitive / LFN** — Pour les équipes et tournois sérieux."
+            "**🏆 Competitive** — Pour les équipes et tournois sérieux.\n"
+            "**📰 LFN** — Toutes les news intéressantes sur la LFN."
         ),
         color=0x5865F2,
     )
@@ -249,7 +252,15 @@ class RoleButtonsView(discord.ui.View):
         custom_id="role_button_competitive",
     )
     async def competitive_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self._toggle_role(interaction, ROLE_COMPETITIVE_ID, "Competitive / LFN")
+        await self._toggle_role(interaction, ROLE_COMPETITIVE_ID, "Competitive")
+
+    @discord.ui.button(
+        label="📰 LFN",
+        style=discord.ButtonStyle.secondary,
+        custom_id="role_button_lfn_news",
+    )
+    async def lfn_news_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle_role(interaction, ROLE_LFN_NEWS_ID, "LFN")
 
 
 def _role_is_assignable(bot_member: discord.Member, role: discord.Role) -> bool:
