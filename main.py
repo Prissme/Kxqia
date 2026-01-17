@@ -519,7 +519,8 @@ async def help_command(ctx: commands.Context):
             '`/unpurge` - Rouvrir un salon verrouillé\n'
             '`!guidetest @membre` - Ajouter le rôle legacy et 5 crédits\n'
             '`e!addcredit @membre <raison>` - Ajouter un crédit\n'
-            '`e!removecredit @membre <raison>` - Retirer un crédit\n\n'
+            '`e!removecredit @membre <raison>` - Retirer un crédit\n'
+            '`e!credits [@membre]` - Voir le solde et l’historique des crédits\n\n'
             '**Analytics:**\n'
             '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
             '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
@@ -569,6 +570,16 @@ async def guidetest(ctx: commands.Context, member: discord.Member):
 
     updates = await _sync_credit_roles(member, CREDIT_DEFAULT)
     updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
+    db.record_credit_change(
+        guild_id=str(ctx.guild.id),
+        user_id=str(member.id),
+        user_name=str(member),
+        delta=CREDIT_DEFAULT,
+        total=CREDIT_DEFAULT,
+        reason="Ajout via !guidetest",
+        actor_id=str(ctx.author.id),
+        actor_name=str(ctx.author),
+    )
     await ctx.send(f"✅ {member.mention} a reçu {CREDIT_DEFAULT} crédits.{updates_text}")
 
 
@@ -585,6 +596,16 @@ async def addcredit(ctx: commands.Context, member: discord.Member, *, reason: Op
     new_credits = db.increment_user_credits(str(ctx.guild.id), str(member.id), 1)
     updates = await _sync_credit_roles(member, new_credits)
     updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
+    db.record_credit_change(
+        guild_id=str(ctx.guild.id),
+        user_id=str(member.id),
+        user_name=str(member),
+        delta=1,
+        total=new_credits,
+        reason=reason.strip(),
+        actor_id=str(ctx.author.id),
+        actor_name=str(ctx.author),
+    )
     await ctx.send(
         f"✅ {member.mention} gagne 1 crédit (total: {new_credits}). Raison : {reason.strip()}.{updates_text}"
     )
@@ -603,9 +624,64 @@ async def removecredit(ctx: commands.Context, member: discord.Member, *, reason:
     new_credits = db.increment_user_credits(str(ctx.guild.id), str(member.id), -1)
     updates = await _sync_credit_roles(member, new_credits)
     updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
+    db.record_credit_change(
+        guild_id=str(ctx.guild.id),
+        user_id=str(member.id),
+        user_name=str(member),
+        delta=-1,
+        total=new_credits,
+        reason=reason.strip(),
+        actor_id=str(ctx.author.id),
+        actor_name=str(ctx.author),
+    )
     await ctx.send(
         f"⚠️ {member.mention} perd 1 crédit (total: {new_credits}). Raison : {reason.strip()}.{updates_text}"
     )
+
+
+@bot.command(name='credits')
+async def credits(ctx: commands.Context, member: Optional[discord.Member] = None):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    target = member or ctx.author
+    total = db.get_user_credits(str(ctx.guild.id), str(target.id))
+    history = db.get_credit_history(str(ctx.guild.id), str(target.id), limit=10)
+
+    embed = discord.Embed(
+        title=f"Crédits de {target.display_name}",
+        color=0x5865F2,
+    )
+    embed.add_field(name="Solde actuel", value=str(total), inline=False)
+
+    if history:
+        lines = []
+        for entry in history:
+            delta = entry.get("delta")
+            try:
+                delta_value = int(delta)
+            except (TypeError, ValueError):
+                delta_value = 0
+            reason = entry.get("reason") or "Raison non renseignée"
+            actor = entry.get("actor_name") or entry.get("actor_id") or "Inconnu"
+            total_value = entry.get("total")
+            total_text = f" (total {total_value})" if total_value is not None else ""
+            timestamp = entry.get("timestamp")
+            date_text = "date inconnue"
+            if isinstance(timestamp, str):
+                try:
+                    cleaned = timestamp.replace("Z", "+00:00")
+                    date_text = datetime.datetime.fromisoformat(cleaned).strftime("%d/%m %H:%M")
+                except ValueError:
+                    date_text = timestamp
+            emoji = "➕" if delta_value >= 0 else "➖"
+            lines.append(f"{emoji} {delta_value:+d}{total_text} — {reason} (par {actor}) — {date_text}")
+        embed.add_field(name="Historique récent", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="Historique récent", value="Aucun mouvement enregistré.", inline=False)
+
+    await ctx.send(embed=embed)
 
 
 def _pcsd_main_embed() -> discord.Embed:
