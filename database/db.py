@@ -3,8 +3,10 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from collections import defaultdict, deque
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from database.supabase_client import get_supabase, test_connection
@@ -655,11 +657,69 @@ def remove_trust_level(user_id: str) -> None:
 
 
 # SECTION 5 - CREDITS
+_LOCAL_CREDITS_PATH = Path(__file__).with_name("local_credits.json")
+_LOCAL_CREDITS_LOCK = threading.Lock()
+
+
+def _load_local_credits() -> dict[str, Any]:
+    if not _LOCAL_CREDITS_PATH.exists():
+        return {"credits": {}, "history": {}}
+    try:
+        with _LOCAL_CREDITS_PATH.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("Erreur lecture credits locaux: %s", exc)
+        return {"credits": {}, "history": {}}
+    data.setdefault("credits", {})
+    data.setdefault("history", {})
+    return data
+
+
+def _save_local_credits(data: dict[str, Any]) -> None:
+    try:
+        with _LOCAL_CREDITS_PATH.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        logger.error("Erreur sauvegarde credits locaux: %s", exc)
+
+
+def _get_local_credits(guild_id: str, user_id: str) -> int:
+    with _LOCAL_CREDITS_LOCK:
+        data = _load_local_credits()
+        return int(data.get("credits", {}).get(guild_id, {}).get(user_id, 0))
+
+
+def _set_local_credits(guild_id: str, user_id: str, credits: int) -> int:
+    with _LOCAL_CREDITS_LOCK:
+        data = _load_local_credits()
+        data.setdefault("credits", {}).setdefault(guild_id, {})[user_id] = int(credits)
+        _save_local_credits(data)
+    return int(credits)
+
+
+def _append_local_credit_history(
+    *,
+    guild_id: str,
+    user_id: str,
+    entry: dict[str, Any],
+) -> None:
+    with _LOCAL_CREDITS_LOCK:
+        data = _load_local_credits()
+        history = data.setdefault("history", {}).setdefault(guild_id, {}).setdefault(user_id, [])
+        history.append(entry)
+        _save_local_credits(data)
+
+
+def _get_local_credit_history(guild_id: str, user_id: str, limit: int) -> list[dict[str, Any]]:
+    with _LOCAL_CREDITS_LOCK:
+        data = _load_local_credits()
+        history = data.get("history", {}).get(guild_id, {}).get(user_id, [])
+        return list(reversed(history))[:limit]
 
 def get_user_credits(guild_id: str, user_id: str) -> int:
     client = _ensure_client()
     if not client:
-        return 0
+        return _get_local_credits(guild_id, user_id)
     try:
         resp = (
             client.table("user_credits")
@@ -674,13 +734,13 @@ def get_user_credits(guild_id: str, user_id: str) -> int:
         return 0
     except Exception as exc:
         logger.error("Erreur get_user_credits: %s", exc)
-        return 0
+        return _get_local_credits(guild_id, user_id)
 
 
 def set_user_credits(guild_id: str, user_id: str, credits: int) -> int:
     client = _ensure_client()
     if not client:
-        return credits
+        return _set_local_credits(guild_id, user_id, credits)
     payload = {
         "guild_id": guild_id,
         "user_id": user_id,
@@ -690,6 +750,7 @@ def set_user_credits(guild_id: str, user_id: str, credits: int) -> int:
         client.table("user_credits").upsert(payload, on_conflict="guild_id,user_id").execute()
     except Exception as exc:
         logger.error("Erreur set_user_credits: %s", exc)
+        return _set_local_credits(guild_id, user_id, credits)
     return int(credits)
 
 
@@ -697,6 +758,93 @@ def increment_user_credits(guild_id: str, user_id: str, delta: int) -> int:
     current = get_user_credits(guild_id, user_id)
     next_value = max(0, current + int(delta))
     return set_user_credits(guild_id, user_id, next_value)
+
+
+def record_credit_change(
+    *,
+    guild_id: str,
+    user_id: str,
+    user_name: str,
+    delta: int,
+    total: int,
+    reason: str,
+    actor_id: str,
+    actor_name: str,
+) -> None:
+    payload = {
+        "type": "credit",
+        "level": "info",
+        "message": f"Crédits {delta:+d} (total {total})",
+        "user_id": user_id,
+        "user_name": user_name,
+        "guild_id": guild_id,
+        "metadata": {
+            "delta": int(delta),
+            "total": int(total),
+            "reason": reason,
+            "actor_id": actor_id,
+            "actor_name": actor_name,
+        },
+    }
+    client = _ensure_client()
+    if not client:
+        _append_local_credit_history(
+            guild_id=guild_id,
+            user_id=user_id,
+            entry={
+                "timestamp": datetime.utcnow().isoformat(),
+                **payload["metadata"],
+                "user_name": user_name,
+            },
+        )
+        return
+    try:
+        client.table("logs").insert(payload).execute()
+    except Exception as exc:
+        logger.error("Erreur record_credit_change: %s", exc)
+        _append_local_credit_history(
+            guild_id=guild_id,
+            user_id=user_id,
+            entry={
+                "timestamp": datetime.utcnow().isoformat(),
+                **payload["metadata"],
+                "user_name": user_name,
+            },
+        )
+
+
+def get_credit_history(guild_id: str, user_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    client = _ensure_client()
+    if not client:
+        return _get_local_credit_history(guild_id, user_id, limit)
+    try:
+        resp = (
+            client.table("logs")
+            .select("timestamp,metadata")
+            .eq("type", "credit")
+            .eq("guild_id", guild_id)
+            .eq("user_id", user_id)
+            .order("timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        results = []
+        for row in resp.data or []:
+            metadata = row.get("metadata") or {}
+            results.append(
+                {
+                    "timestamp": row.get("timestamp"),
+                    "delta": metadata.get("delta"),
+                    "total": metadata.get("total"),
+                    "reason": metadata.get("reason"),
+                    "actor_id": metadata.get("actor_id"),
+                    "actor_name": metadata.get("actor_name"),
+                }
+            )
+        return results
+    except Exception as exc:
+        logger.error("Erreur get_credit_history: %s", exc)
+        return _get_local_credit_history(guild_id, user_id, limit)
 
 
 # SECTION 6 - MESSAGES
