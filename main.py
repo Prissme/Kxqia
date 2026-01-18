@@ -520,7 +520,8 @@ async def help_command(ctx: commands.Context):
             '`!guidetest @membre` - Ajouter le rôle legacy et 5 crédits\n'
             '`e!addcredit @membre <raison>` - Ajouter un crédit\n'
             '`e!removecredit @membre <raison>` - Retirer un crédit\n'
-            '`e!credits [@membre]` - Voir le solde et l’historique des crédits\n\n'
+            '`e!credits [@membre]` - Voir le solde et l’historique des crédits\n'
+            '`e!clb` - Classement des staff par crédits\n\n'
             '**Analytics:**\n'
             '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
             '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
@@ -681,6 +682,46 @@ async def credits(ctx: commands.Context, member: Optional[discord.Member] = None
     else:
         embed.add_field(name="Historique récent", value="Aucun mouvement enregistré.", inline=False)
 
+    await ctx.send(embed=embed)
+
+
+@bot.command(name='clb')
+async def credits_leaderboard(ctx: commands.Context):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    staff_role = ctx.guild.get_role(LEGACY_VOTESTAFF_ROLE_ID)
+    if staff_role is None:
+        await ctx.send("Le rôle staff est introuvable.")
+        return
+
+    staff_members = [member for member in staff_role.members if not member.bot]
+    if not staff_members:
+        await ctx.send("Aucun staff trouvé pour établir le classement.")
+        return
+
+    top_entries = db.get_top_credits(
+        str(ctx.guild.id),
+        [str(member.id) for member in staff_members],
+        limit=10,
+    )
+    if not top_entries:
+        await ctx.send("Aucun crédit enregistré pour les staff pour le moment.")
+        return
+
+    lines = []
+    for index, entry in enumerate(top_entries, start=1):
+        member = ctx.guild.get_member(int(entry.get("user_id") or 0))
+        name = member.display_name if member else f"ID {entry.get('user_id')}"
+        credits_value = entry.get("credits", 0)
+        lines.append(f"**{index}.** {name} — {credits_value} crédits")
+
+    embed = discord.Embed(
+        title="🏆 Classement des staff (crédits)",
+        description="\n".join(lines),
+        color=0x5865F2,
+    )
     await ctx.send(embed=embed)
 
 

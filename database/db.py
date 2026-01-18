@@ -847,6 +847,48 @@ def get_credit_history(guild_id: str, user_id: str, limit: int = 10) -> list[dic
         return _get_local_credit_history(guild_id, user_id, limit)
 
 
+def get_top_credits(guild_id: str, user_ids: Iterable[str], limit: int = 10) -> list[dict[str, Any]]:
+    ids = [str(user_id) for user_id in user_ids if user_id]
+    if not ids:
+        return []
+    client = _ensure_client()
+    if not client:
+        with _LOCAL_CREDITS_LOCK:
+            data = _load_local_credits()
+        credits_map = data.get("credits", {}).get(guild_id, {})
+        results = [
+            {"user_id": user_id, "credits": int(credits_map.get(user_id, 0))}
+            for user_id in ids
+        ]
+        results.sort(key=lambda entry: entry["credits"], reverse=True)
+        return results[:limit]
+    try:
+        resp = (
+            client.table("user_credits")
+            .select("user_id,credits")
+            .eq("guild_id", guild_id)
+            .in_("user_id", ids)
+            .order("credits", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [
+            {"user_id": row.get("user_id"), "credits": int(row.get("credits") or 0)}
+            for row in resp.data or []
+        ]
+    except Exception as exc:
+        logger.error("Erreur get_top_credits: %s", exc)
+        with _LOCAL_CREDITS_LOCK:
+            data = _load_local_credits()
+        credits_map = data.get("credits", {}).get(guild_id, {})
+        results = [
+            {"user_id": user_id, "credits": int(credits_map.get(user_id, 0))}
+            for user_id in ids
+        ]
+        results.sort(key=lambda entry: entry["credits"], reverse=True)
+        return results[:limit]
+
+
 # SECTION 6 - MESSAGES
 
 def count_user_messages(user_id: str, guild_id: Optional[str] = None) -> int:
