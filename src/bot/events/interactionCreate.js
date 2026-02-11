@@ -4,14 +4,19 @@ export default {
   name: "interactionCreate",
   async execute(interaction) {
     if (interaction.isButton()) {
+      const roleByButtonId = {
+        role_scrims: "1451687979189014548",
+        role_lfn: "1406762832720035891",
+        role_ptv99: "1464693030937165825"
+      };
+
       if (interaction.customId === "ticket_open") {
         const { handleTicketButton } = await import("../tickets.js");
         await handleTicketButton(interaction);
         return;
       }
-      if (interaction.customId === "role_scrims" || interaction.customId === "role_lfn") {
-        const roleId =
-          interaction.customId === "role_scrims" ? "1451687979189014548" : "1406762832720035891";
+      if (roleByButtonId[interaction.customId]) {
+        const roleId = roleByButtonId[interaction.customId];
         const member = interaction.member;
         if (!member || !interaction.guild) {
           await interaction.reply({
@@ -24,13 +29,13 @@ export default {
         if (hasRole) {
           await member.roles.remove(roleId).catch(() => {});
           await interaction.reply({
-            embeds: [buildSuccessEmbed("Rôle retiré.")],
+            embeds: [buildSuccessEmbed(`<@&${roleId}> retiré.`)],
             ephemeral: true
           });
         } else {
           await member.roles.add(roleId).catch(() => {});
           await interaction.reply({
-            embeds: [buildSuccessEmbed("Rôle ajouté.")],
+            embeds: [buildSuccessEmbed(`<@&${roleId}> ajouté.`)],
             ephemeral: true
           });
         }
