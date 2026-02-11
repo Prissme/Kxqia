@@ -23,6 +23,7 @@ export function createClient(logger) {
   const ROLE_CHANNEL_ID = "1267617798658457732";
   const ROLE_SCRIMS_ID = "1451687979189014548";
   const ROLE_LFN_ID = "1406762832720035891";
+  const ROLE_PTV99_ID = "1464693030937165825";
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -99,7 +100,8 @@ export function createClient(logger) {
         .setDescription(
           `Sélectionne les rôles qui t'intéressent :\n\n` +
             `• <@&${ROLE_SCRIMS_ID}> : scrims fun/sérieux + recherche ranked\n` +
-            `• <@&${ROLE_LFN_ID}> : LFN + Cups`
+            `• <@&${ROLE_LFN_ID}> : LFN + Cups\n` +
+            `• <@&${ROLE_PTV99_ID}> : si tu veux être branché sur les actus de PTV99`
         )
         .setColor(0x5865f2);
 
@@ -111,7 +113,11 @@ export function createClient(logger) {
         new ButtonBuilder()
           .setCustomId("role_lfn")
           .setLabel("LFN / Cups")
-          .setStyle(ButtonStyle.Secondary)
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId("role_ptv99")
+          .setLabel("Actus PTV99")
+          .setStyle(ButtonStyle.Success)
       );
 
       const existing = await roleChannel.messages.fetch({ limit: 10 }).catch(() => null);
