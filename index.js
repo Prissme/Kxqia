@@ -6,11 +6,13 @@ const ROLE_SCRIMS = '1451687979189014548';
 const ROLE_COMP = '1406762832720035891';
 const ROLE_LFN_NEWS = '1455197400560832676';
 const ROLE_LFN_TEAM = '1454475274296099058';
+const ROLE_POWER_LEAGUE = '1469030334510137398';
 
 const BUTTON_SCRIMS = 'toggle_role_scrims_ranked';
 const BUTTON_COMP = 'toggle_role_competitive';
 const BUTTON_LFN_NEWS = 'toggle_role_lfn_news';
 const BUTTON_LFN_TEAM = 'toggle_role_lfn_team';
+const BUTTON_POWER_LEAGUE = 'toggle_role_power_league';
 const SAFE_ALLOWED_MENTIONS = { parse: [] };
 
 const client = new Client({
@@ -28,6 +30,7 @@ function buildRoleEmbed() {
         `• 🏆 <@&${ROLE_COMP}> — Competitive`,
         `• 📰 <@&${ROLE_LFN_NEWS}> — Toutes les news intéressantes sur la LFN`,
         `• 🤝 <@&${ROLE_LFN_TEAM}> — Recherche équipe LFN`,
+        `• ⚡ <@&${ROLE_POWER_LEAGUE}> — Pour s'inscrire à la Power League du serveur`,
       ].join('\n')
     );
 }
@@ -53,7 +56,12 @@ function buildRoleButtons() {
     .setLabel('🤝 LFN team')
     .setStyle(ButtonStyle.Secondary);
 
-  return new ActionRowBuilder().addComponents(scrimsButton, compButton, lfnNewsButton, lfnTeamButton);
+  const powerLeagueButton = new ButtonBuilder()
+    .setCustomId(BUTTON_POWER_LEAGUE)
+    .setLabel('⚡ Power League')
+    .setStyle(ButtonStyle.Danger);
+
+  return new ActionRowBuilder().addComponents(scrimsButton, compButton, lfnNewsButton, lfnTeamButton, powerLeagueButton);
 }
 
 function buildStatusEmbed(message, color) {
@@ -165,6 +173,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (interaction.customId === BUTTON_LFN_TEAM) {
     return handleToggle(interaction, ROLE_LFN_TEAM);
+  }
+
+  if (interaction.customId === BUTTON_POWER_LEAGUE) {
+    return handleToggle(interaction, ROLE_POWER_LEAGUE);
   }
 });
 
