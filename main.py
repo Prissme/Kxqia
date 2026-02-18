@@ -56,10 +56,14 @@ ROLE_CHANNEL_ID = 1267617798658457732
 ROLE_SCRIMS_ID = 1451687979189014548
 ROLE_COMPETITIVE_ID = 1406762832720035891
 ROLE_LFN_NEWS_ID = 1455197400560832676
+ROLE_LFN_TEAM_ID = 1454475274296099058
+ROLE_POWER_LEAGUE_ID = 1469030334510137398
 ROLE_BUTTON_IDS = {
     "role_button_scrims",
     "role_button_competitive",
     "role_button_lfn_news",
+    "role_button_lfn_team",
+    "role_button_power_league",
 }
 _background_tasks_started = False
 _role_view_added = False
@@ -111,9 +115,11 @@ def _build_roles_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         title="🎮 Choisis ton mode de jeu !",
         description=(
             "Sélectionne le rôle qui correspond à ta vibe et commence à jouer.\n\n"
-            "**⚔️ Scrims / Ranked** — Pour les joueurs qui veulent grind le ladder.\n"
-            "**🏆 Competitive** — Pour les équipes et tournois sérieux.\n"
-            "**📰 LFN** — Toutes les news intéressantes sur la LFN."
+            f"⚔️ <@&{ROLE_SCRIMS_ID}> — Pour les joueurs qui veulent grind le ladder.\n"
+            f"🏆 <@&{ROLE_COMPETITIVE_ID}> — Pour les équipes et tournois sérieux.\n"
+            f"📰 <@&{ROLE_LFN_NEWS_ID}> — Toutes les news intéressantes sur la LFN.\n"
+            f"🤝 <@&{ROLE_LFN_TEAM_ID}> — Recherche équipe LFN.\n"
+            f"⚡ <@&{ROLE_POWER_LEAGUE_ID}> — Pour s'inscrire à la Power League du serveur."
         ),
         color=0x5865F2,
     )
@@ -225,11 +231,11 @@ class RoleButtonsView(discord.ui.View):
         try:
             if role in member.roles:
                 await member.remove_roles(role, reason="Retrait via boutons de rôles")
-                await _send_ephemeral(interaction, f"✅ Rôle **{role_label}** retiré.")
+                await _send_ephemeral(interaction, f"✅ Rôle {role.mention} retiré.")
                 logger.info("Rôle %s retiré à %s.", role.name, member)
             else:
                 await member.add_roles(role, reason="Ajout via boutons de rôles")
-                await _send_ephemeral(interaction, f"✨ Rôle **{role_label}** ajouté.")
+                await _send_ephemeral(interaction, f"✨ Rôle {role.mention} ajouté.")
                 logger.info("Rôle %s ajouté à %s.", role.name, member)
         except discord.Forbidden:
             await _send_ephemeral(interaction, "Je n'ai pas la permission de modifier ce rôle.")
@@ -261,6 +267,22 @@ class RoleButtonsView(discord.ui.View):
     )
     async def lfn_news_button(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self._toggle_role(interaction, ROLE_LFN_NEWS_ID, "LFN")
+
+    @discord.ui.button(
+        label="🤝 LFN team",
+        style=discord.ButtonStyle.secondary,
+        custom_id="role_button_lfn_team",
+    )
+    async def lfn_team_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle_role(interaction, ROLE_LFN_TEAM_ID, "LFN team")
+
+    @discord.ui.button(
+        label="⚡ Power League",
+        style=discord.ButtonStyle.danger,
+        custom_id="role_button_power_league",
+    )
+    async def power_league_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle_role(interaction, ROLE_POWER_LEAGUE_ID, "Power League")
 
 
 def _role_is_assignable(bot_member: discord.Member, role: discord.Role) -> bool:
