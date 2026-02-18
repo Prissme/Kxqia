@@ -5,13 +5,13 @@ const CHANNEL_ID = '1267617798658457732';
 const ROLE_SCRIMS = '1451687979189014548';
 const ROLE_COMP = '1406762832720035891';
 const ROLE_LFN_NEWS = '1455197400560832676';
-const ROLE_LFN_TEAM = '1454475274296099058';
+const ROLE_VOTES2PROFILS = '1473663706100531282';
 const ROLE_POWER_LEAGUE = '1469030334510137398';
 
 const BUTTON_SCRIMS = 'toggle_role_scrims_ranked';
 const BUTTON_COMP = 'toggle_role_competitive';
 const BUTTON_LFN_NEWS = 'toggle_role_lfn_news';
-const BUTTON_LFN_TEAM = 'toggle_role_lfn_team';
+const BUTTON_VOTES2PROFILS = 'toggle_role_votes2profils';
 const BUTTON_POWER_LEAGUE = 'toggle_role_power_league';
 const SAFE_ALLOWED_MENTIONS = { parse: [] };
 
@@ -29,7 +29,7 @@ function buildRoleEmbed() {
         `• ⚔️ <@&${ROLE_SCRIMS}> — Scrims / Ranked`,
         `• 🏆 <@&${ROLE_COMP}> — Competitive`,
         `• 📰 <@&${ROLE_LFN_NEWS}> — Toutes les news intéressantes sur la LFN`,
-        `• 🤝 <@&${ROLE_LFN_TEAM}> — Recherche équipe LFN`,
+        `• 🗳️ <@&${ROLE_VOTES2PROFILS}> — Pour participer aux Votes2Profils du serveur`,
         `• ⚡ <@&${ROLE_POWER_LEAGUE}> — Pour s'inscrire à la Power League du serveur`,
       ].join('\n')
     );
@@ -51,9 +51,9 @@ function buildRoleButtons() {
     .setLabel('📰 LFN')
     .setStyle(ButtonStyle.Secondary);
 
-  const lfnTeamButton = new ButtonBuilder()
-    .setCustomId(BUTTON_LFN_TEAM)
-    .setLabel('🤝 LFN team')
+  const votes2profilsButton = new ButtonBuilder()
+    .setCustomId(BUTTON_VOTES2PROFILS)
+    .setLabel('🗳️ Votes2Profils')
     .setStyle(ButtonStyle.Secondary);
 
   const powerLeagueButton = new ButtonBuilder()
@@ -61,7 +61,7 @@ function buildRoleButtons() {
     .setLabel('⚡ Power League')
     .setStyle(ButtonStyle.Danger);
 
-  return new ActionRowBuilder().addComponents(scrimsButton, compButton, lfnNewsButton, lfnTeamButton, powerLeagueButton);
+  return new ActionRowBuilder().addComponents(scrimsButton, compButton, lfnNewsButton, votes2profilsButton, powerLeagueButton);
 }
 
 function buildStatusEmbed(message, color) {
@@ -171,8 +171,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return handleToggle(interaction, ROLE_LFN_NEWS);
   }
 
-  if (interaction.customId === BUTTON_LFN_TEAM) {
-    return handleToggle(interaction, ROLE_LFN_TEAM);
+  if (interaction.customId === BUTTON_VOTES2PROFILS) {
+    return handleToggle(interaction, ROLE_VOTES2PROFILS);
   }
 
   if (interaction.customId === BUTTON_POWER_LEAGUE) {
