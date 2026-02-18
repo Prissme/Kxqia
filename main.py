@@ -56,13 +56,13 @@ ROLE_CHANNEL_ID = 1267617798658457732
 ROLE_SCRIMS_ID = 1451687979189014548
 ROLE_COMPETITIVE_ID = 1406762832720035891
 ROLE_LFN_NEWS_ID = 1455197400560832676
-ROLE_LFN_TEAM_ID = 1454475274296099058
+ROLE_VOTES2PROFILS_ID = 1473663706100531282
 ROLE_POWER_LEAGUE_ID = 1469030334510137398
 ROLE_BUTTON_IDS = {
     "role_button_scrims",
     "role_button_competitive",
     "role_button_lfn_news",
-    "role_button_lfn_team",
+    "role_button_votes2profils",
     "role_button_power_league",
 }
 _background_tasks_started = False
@@ -118,7 +118,7 @@ def _build_roles_embed(guild: Optional[discord.Guild]) -> discord.Embed:
             f"⚔️ <@&{ROLE_SCRIMS_ID}> — Pour les joueurs qui veulent grind le ladder.\n"
             f"🏆 <@&{ROLE_COMPETITIVE_ID}> — Pour les équipes et tournois sérieux.\n"
             f"📰 <@&{ROLE_LFN_NEWS_ID}> — Toutes les news intéressantes sur la LFN.\n"
-            f"🤝 <@&{ROLE_LFN_TEAM_ID}> — Recherche équipe LFN.\n"
+            f"🗳️ <@&{ROLE_VOTES2PROFILS_ID}> — Pour participer aux Votes2Profils du serveur.\n"
             f"⚡ <@&{ROLE_POWER_LEAGUE_ID}> — Pour s'inscrire à la Power League du serveur."
         ),
         color=0x5865F2,
@@ -269,12 +269,12 @@ class RoleButtonsView(discord.ui.View):
         await self._toggle_role(interaction, ROLE_LFN_NEWS_ID, "LFN")
 
     @discord.ui.button(
-        label="🤝 LFN team",
+        label="🗳️ Votes2Profils",
         style=discord.ButtonStyle.secondary,
-        custom_id="role_button_lfn_team",
+        custom_id="role_button_votes2profils",
     )
-    async def lfn_team_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self._toggle_role(interaction, ROLE_LFN_TEAM_ID, "LFN team")
+    async def votes2profils_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._toggle_role(interaction, ROLE_VOTES2PROFILS_ID, "Votes2Profils")
 
     @discord.ui.button(
         label="⚡ Power League",
