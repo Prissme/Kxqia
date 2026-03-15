@@ -65,6 +65,12 @@ ROLE_BUTTON_IDS = {
     "role_button_votes2profils",
     "role_button_power_league",
 }
+XP_PER_MESSAGE = 5
+XP_COOLDOWN_SECONDS = 30
+MAX_LEVEL = 99
+XP_BY_LEVEL = 100
+MAX_XP = MAX_LEVEL * XP_BY_LEVEL
+_xp_last_gain_at: dict[tuple[int, int], datetime.datetime] = {}
 _background_tasks_started = False
 _role_view_added = False
 _roles_view: Optional["RoleButtonsView"] = None
@@ -383,6 +389,43 @@ async def collect_message_stats(guild: discord.Guild, cutoff: datetime.datetime)
     return len(authors), counter
 
 
+
+def _xp_to_level(xp: int) -> int:
+    if xp <= 0:
+        return 0
+    return min(MAX_LEVEL, int(xp // XP_BY_LEVEL))
+
+
+def _xp_in_current_level(xp: int) -> tuple[int, int]:
+    level = _xp_to_level(xp)
+    if level >= MAX_LEVEL:
+        return XP_BY_LEVEL, XP_BY_LEVEL
+    base = level * XP_BY_LEVEL
+    return max(0, xp - base), XP_BY_LEVEL
+
+
+def _grant_message_xp(message: discord.Message) -> None:
+    if message.guild is None:
+        return
+    key = (message.guild.id, message.author.id)
+    now = datetime.datetime.utcnow()
+    last = _xp_last_gain_at.get(key)
+    if last and (now - last).total_seconds() < XP_COOLDOWN_SECONDS:
+        return
+
+    guild_id = str(message.guild.id)
+    user_id = str(message.author.id)
+    current = db.get_user_xp(guild_id, user_id)
+    current_xp = int(current.get('xp', 0) or 0)
+    if current_xp >= MAX_XP:
+        _xp_last_gain_at[key] = now
+        return
+
+    new_xp = min(MAX_XP, current_xp + XP_PER_MESSAGE)
+    db.set_user_xp(guild_id, user_id, str(message.author), new_xp)
+    _xp_last_gain_at[key] = now
+
+
 # --- Discord events and commands
 @bot.event
 async def on_ready():
@@ -420,6 +463,7 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    _grant_message_xp(message)
     await bot.process_commands(message)
     guild = message.guild
     if guild is None:
@@ -548,7 +592,9 @@ async def help_command(ctx: commands.Context):
             '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
             '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
             '**Utilitaires:**\n'
-            '`!ping` - Vérifier la latence du bot'
+            '`!ping` - Vérifier la latence du bot\n'
+            '`!xp [@membre]` - Voir ton niveau XP (max niveau 99)\n'
+            '`!topxp` - Classement XP du serveur'
         ),
         color=0x5865F2
     )
@@ -558,6 +604,62 @@ async def help_command(ctx: commands.Context):
 @bot.command(name='ping')
 async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
+
+
+
+@bot.command(name='xp')
+async def xp_command(ctx: commands.Context, member: Optional[discord.Member] = None):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    target = member or ctx.author
+    entry = db.get_user_xp(str(ctx.guild.id), str(target.id))
+    xp_value = int(entry.get('xp', 0) or 0)
+    level = _xp_to_level(xp_value)
+    progress, required = _xp_in_current_level(xp_value)
+
+    if level >= MAX_LEVEL:
+        progress_text = 'Niveau max atteint (99)'
+    else:
+        progress_text = f'{progress}/{required} XP vers le niveau {level + 1}'
+
+    embed = discord.Embed(
+        title=f'XP de {target.display_name}',
+        color=0x5865F2,
+    )
+    embed.add_field(name='Niveau', value=str(level), inline=True)
+    embed.add_field(name='XP total', value=f'{xp_value}/{MAX_XP}', inline=True)
+    embed.add_field(name='Progression', value=progress_text, inline=False)
+    await ctx.send(embed=embed)
+
+
+@bot.command(name='topxp')
+async def topxp_command(ctx: commands.Context):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    top_entries = db.get_top_xp(str(ctx.guild.id), limit=10)
+    if not top_entries:
+        await ctx.send('Aucune XP enregistrée pour le moment.')
+        return
+
+    lines = []
+    for index, entry in enumerate(top_entries, start=1):
+        user_id = entry.get('user_id')
+        member = ctx.guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
+        name = member.display_name if member else (entry.get('user_name') or f'ID {user_id}')
+        xp_value = int(entry.get('xp', 0) or 0)
+        level = _xp_to_level(xp_value)
+        lines.append(f'**{index}.** {name} — Niveau {level} ({xp_value} XP)')
+
+    embed = discord.Embed(
+        title='🏆 Top XP du serveur',
+        description='\n'.join(lines),
+        color=0x5865F2,
+    )
+    await ctx.send(embed=embed)
 
 
 @bot.command(name='guidetest')

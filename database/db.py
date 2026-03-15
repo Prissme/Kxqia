@@ -659,6 +659,8 @@ def remove_trust_level(user_id: str) -> None:
 # SECTION 5 - CREDITS
 _LOCAL_CREDITS_PATH = Path(__file__).with_name("local_credits.json")
 _LOCAL_CREDITS_LOCK = threading.Lock()
+_LOCAL_XP_PATH = Path(__file__).with_name("local_xp.json")
+_LOCAL_XP_LOCK = threading.Lock()
 
 
 def _load_local_credits() -> dict[str, Any]:
@@ -889,7 +891,154 @@ def get_top_credits(guild_id: str, user_ids: Iterable[str], limit: int = 10) -> 
         return results[:limit]
 
 
-# SECTION 6 - MESSAGES
+# SECTION 6 - XP
+
+def _load_local_xp() -> dict[str, Any]:
+    if not _LOCAL_XP_PATH.exists():
+        return {"xp": {}}
+    try:
+        with _LOCAL_XP_PATH.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("Erreur lecture XP local: %s", exc)
+        return {"xp": {}}
+    data.setdefault("xp", {})
+    return data
+
+
+def _save_local_xp(data: dict[str, Any]) -> None:
+    try:
+        with _LOCAL_XP_PATH.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        logger.error("Erreur sauvegarde XP local: %s", exc)
+
+
+def _get_local_user_xp(guild_id: str, user_id: str) -> dict[str, Any]:
+    with _LOCAL_XP_LOCK:
+        data = _load_local_xp()
+        entry = data.get("xp", {}).get(guild_id, {}).get(user_id, {})
+        return {
+            "user_id": user_id,
+            "user_name": entry.get("user_name") or user_id,
+            "xp": int(entry.get("xp", 0) or 0),
+        }
+
+
+def get_user_xp(guild_id: str, user_id: str) -> dict[str, Any]:
+    client = _ensure_client()
+    if not client:
+        return _get_local_user_xp(guild_id, user_id)
+    try:
+        resp = (
+            client.table("user_xp")
+            .select("user_id,user_name,xp")
+            .eq("guild_id", guild_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        row = (resp.data or [{}])[0]
+        return {
+            "user_id": user_id,
+            "user_name": row.get("user_name") or user_id,
+            "xp": int(row.get("xp", 0) or 0),
+        }
+    except Exception as exc:
+        logger.error("Erreur get_user_xp: %s", exc)
+        return _get_local_user_xp(guild_id, user_id)
+
+
+def set_user_xp(guild_id: str, user_id: str, user_name: str, xp: int) -> int:
+    client = _ensure_client()
+    if not client:
+        with _LOCAL_XP_LOCK:
+            data = _load_local_xp()
+            data.setdefault("xp", {}).setdefault(guild_id, {})[user_id] = {
+                "user_name": user_name,
+                "xp": int(xp),
+            }
+            _save_local_xp(data)
+        return int(xp)
+
+    payload = {
+        "guild_id": guild_id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "xp": int(xp),
+    }
+    try:
+        client.table("user_xp").upsert(payload, on_conflict="guild_id,user_id").execute()
+    except Exception as exc:
+        logger.error("Erreur set_user_xp: %s", exc)
+        with _LOCAL_XP_LOCK:
+            data = _load_local_xp()
+            data.setdefault("xp", {}).setdefault(guild_id, {})[user_id] = {
+                "user_name": user_name,
+                "xp": int(xp),
+            }
+            _save_local_xp(data)
+    return int(xp)
+
+
+def increment_user_xp(guild_id: str, user_id: str, user_name: str, delta: int) -> int:
+    current = get_user_xp(guild_id, user_id)
+    next_value = max(0, int(current.get("xp", 0)) + int(delta))
+    return set_user_xp(guild_id, user_id, user_name, next_value)
+
+
+def get_top_xp(guild_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    client = _ensure_client()
+    if not client:
+        with _LOCAL_XP_LOCK:
+            data = _load_local_xp()
+        entries = []
+        for user_id, values in data.get("xp", {}).get(guild_id, {}).items():
+            entries.append(
+                {
+                    "user_id": user_id,
+                    "user_name": values.get("user_name") or user_id,
+                    "xp": int(values.get("xp", 0) or 0),
+                }
+            )
+        entries.sort(key=lambda item: item["xp"], reverse=True)
+        return entries[:limit]
+
+    try:
+        resp = (
+            client.table("user_xp")
+            .select("user_id,user_name,xp")
+            .eq("guild_id", guild_id)
+            .order("xp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [
+            {
+                "user_id": row.get("user_id"),
+                "user_name": row.get("user_name") or row.get("user_id"),
+                "xp": int(row.get("xp", 0) or 0),
+            }
+            for row in (resp.data or [])
+        ]
+    except Exception as exc:
+        logger.error("Erreur get_top_xp: %s", exc)
+        with _LOCAL_XP_LOCK:
+            data = _load_local_xp()
+        entries = []
+        for user_id, values in data.get("xp", {}).get(guild_id, {}).items():
+            entries.append(
+                {
+                    "user_id": user_id,
+                    "user_name": values.get("user_name") or user_id,
+                    "xp": int(values.get("xp", 0) or 0),
+                }
+            )
+        entries.sort(key=lambda item: item["xp"], reverse=True)
+        return entries[:limit]
+
+
+# SECTION 7 - MESSAGES
 
 def count_user_messages(user_id: str, guild_id: Optional[str] = None) -> int:
     client = _ensure_client()
@@ -911,7 +1060,7 @@ def count_user_messages(user_id: str, guild_id: Optional[str] = None) -> int:
         return 0
 
 
-# SECTION 7 - EXPORT
+# SECTION 8 - EXPORT
 
 def export_table(table: str) -> Iterable[dict]:
     client = _ensure_client()
