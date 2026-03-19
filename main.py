@@ -68,8 +68,8 @@ ROLE_BUTTON_IDS = {
 XP_PER_MESSAGE = 5
 XP_COOLDOWN_SECONDS = 30
 MAX_LEVEL = 99
-XP_BY_LEVEL = 100
-MAX_XP = MAX_LEVEL * XP_BY_LEVEL
+XP_BASE_BY_LEVEL = 100
+XP_GROWTH_FACTOR = 1.12
 _xp_last_gain_at: dict[tuple[int, int], datetime.datetime] = {}
 _background_tasks_started = False
 _role_view_added = False
@@ -390,21 +390,55 @@ async def collect_message_stats(guild: discord.Guild, cutoff: datetime.datetime)
 
 
 
+def _xp_required_for_next_level(level: int) -> int:
+    """XP requis pour passer du niveau `level` au niveau `level + 1`."""
+    if level < 0:
+        return XP_BASE_BY_LEVEL
+    return int(XP_BASE_BY_LEVEL * (XP_GROWTH_FACTOR ** level))
+
+
+def _xp_total_for_level(level: int) -> int:
+    """XP total cumulé nécessaire pour atteindre `level`."""
+    if level <= 0:
+        return 0
+    total = 0
+    for current_level in range(level):
+        total += _xp_required_for_next_level(current_level)
+    return total
+
+
+MAX_XP = _xp_total_for_level(MAX_LEVEL)
+
+
 def _xp_to_level(xp: int) -> int:
     if xp <= 0:
         return 0
-    return min(MAX_LEVEL, int(xp // XP_BY_LEVEL))
+    level = 0
+    while level < MAX_LEVEL and xp >= _xp_total_for_level(level + 1):
+        level += 1
+    return level
 
 
 def _xp_in_current_level(xp: int) -> tuple[int, int]:
     level = _xp_to_level(xp)
     if level >= MAX_LEVEL:
-        return XP_BY_LEVEL, XP_BY_LEVEL
-    base = level * XP_BY_LEVEL
-    return max(0, xp - base), XP_BY_LEVEL
+        max_level_required = _xp_required_for_next_level(MAX_LEVEL - 1)
+        return max_level_required, max_level_required
+    base = _xp_total_for_level(level)
+    required = _xp_required_for_next_level(level)
+    return max(0, xp - base), required
 
 
-def _grant_message_xp(message: discord.Message) -> None:
+def _build_progress_bar(progress: int, required: int, size: int = 12) -> str:
+    if required <= 0:
+        ratio = 1.0
+    else:
+        ratio = min(1.0, max(0.0, progress / required))
+    filled = round(ratio * size)
+    return f"{'█' * filled}{'░' * (size - filled)} {int(ratio * 100)}%"
+
+
+async def _grant_message_xp(message: discord.Message) -> None:
     if message.guild is None:
         return
     key = (message.guild.id, message.author.id)
@@ -421,9 +455,14 @@ def _grant_message_xp(message: discord.Message) -> None:
         _xp_last_gain_at[key] = now
         return
 
+    old_level = _xp_to_level(current_xp)
     new_xp = min(MAX_XP, current_xp + XP_PER_MESSAGE)
     db.set_user_xp(guild_id, user_id, str(message.author), new_xp)
     _xp_last_gain_at[key] = now
+
+    new_level = _xp_to_level(new_xp)
+    if new_level > old_level:
+        await message.channel.send(f"{message.author.mention} Level up! 🎉 Tu es maintenant niveau {new_level}.")
 
 
 # --- Discord events and commands
@@ -463,7 +502,7 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
-    _grant_message_xp(message)
+    await _grant_message_xp(message)
     await bot.process_commands(message)
     guild = message.guild
     if guild is None:
@@ -621,16 +660,20 @@ async def xp_command(ctx: commands.Context, member: Optional[discord.Member] = N
 
     if level >= MAX_LEVEL:
         progress_text = 'Niveau max atteint (99)'
+        progress_bar = _build_progress_bar(1, 1)
     else:
         progress_text = f'{progress}/{required} XP vers le niveau {level + 1}'
+        progress_bar = _build_progress_bar(progress, required)
 
     embed = discord.Embed(
         title=f'XP de {target.display_name}',
         color=0x5865F2,
     )
+    embed.set_thumbnail(url=target.display_avatar.url)
     embed.add_field(name='Niveau', value=str(level), inline=True)
     embed.add_field(name='XP total', value=f'{xp_value}/{MAX_XP}', inline=True)
     embed.add_field(name='Progression', value=progress_text, inline=False)
+    embed.add_field(name='Barre de niveau', value=progress_bar, inline=False)
     await ctx.send(embed=embed)
 
 
