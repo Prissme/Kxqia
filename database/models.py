@@ -17,6 +17,8 @@ class Config:
     cleanup: bool = True
     slow_mode: dict[str, Any] = None
     trust_levels: dict[str, str] = None
+    raid: dict[str, Any] = None
+    nuke: dict[str, Any] = None
 
     @staticmethod
     def default_slow_mode() -> dict[str, Any]:
@@ -36,6 +38,8 @@ class Config:
         mapping = mapping or {}
         slow_mode = mapping.get('slow_mode') or mapping.get('slowMode') or cls.default_slow_mode()
         trust_levels = mapping.get('trust_levels', {}) or mapping.get('trustLevels', {})
+        raid = mapping.get('raid') or cls.default_raid()
+        nuke = mapping.get('nuke') or cls.default_nuke()
         return cls(
             prefix=mapping.get('prefix', cls.prefix),
             language=mapping.get('language', cls.language),
@@ -48,10 +52,34 @@ class Config:
             cleanup=bool(mapping.get('cleanup', cls.cleanup)),
             slow_mode=_normalize_slow_mode(slow_mode),
             trust_levels=trust_levels if isinstance(trust_levels, dict) else {},
+            raid=_normalize_raid(raid),
+            nuke=_normalize_nuke(nuke),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return deepcopy(self.__dict__)
+
+    @staticmethod
+    def default_raid() -> dict[str, Any]:
+        return {
+            'joinThreshold': 10,
+            'accountAgeDays': 7,
+            'lockdownOnRaid': True,
+            'kickYoungAccounts': False,
+            'quarantineRoleId': '',
+        }
+
+    @staticmethod
+    def default_nuke() -> dict[str, Any]:
+        return {
+            'timeWindow': 30,
+            'channelDeleteLimit': 3,
+            'roleDeleteLimit': 5,
+            'banLimit': 10,
+            'webhookCreateLimit': 3,
+            'punitiveAction': 'strip',
+            'allowOwner': True,
+        }
 
 
 def _normalize_slow_mode(data: Any) -> dict[str, Any]:
@@ -89,4 +117,45 @@ def _normalize_slow_mode(data: Any) -> dict[str, Any]:
         'window_seconds': max(10, min(window_seconds, 600)),
         'min_update_interval_seconds': max(5, min(min_update_interval_seconds, 600)),
         'tiers': tiers,
+    }
+
+
+def _normalize_raid(data: Any) -> dict[str, Any]:
+    default = Config.default_raid()
+    if not isinstance(data, dict):
+        return default
+    def _to_int(value: Any, fallback: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+    return {
+        'joinThreshold': max(2, _to_int(data.get('joinThreshold'), default['joinThreshold'])),
+        'accountAgeDays': max(1, _to_int(data.get('accountAgeDays'), default['accountAgeDays'])),
+        'lockdownOnRaid': bool(data.get('lockdownOnRaid', default['lockdownOnRaid'])),
+        'kickYoungAccounts': bool(data.get('kickYoungAccounts', default['kickYoungAccounts'])),
+        'quarantineRoleId': str(data.get('quarantineRoleId', default['quarantineRoleId']) or ''),
+    }
+
+
+def _normalize_nuke(data: Any) -> dict[str, Any]:
+    default = Config.default_nuke()
+    if not isinstance(data, dict):
+        return default
+    def _to_int(value: Any, fallback: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+    punitive_action = str(data.get('punitiveAction', default['punitiveAction'])).lower()
+    if punitive_action not in {'strip', 'ban'}:
+        punitive_action = default['punitiveAction']
+    return {
+        'timeWindow': max(5, _to_int(data.get('timeWindow'), default['timeWindow'])),
+        'channelDeleteLimit': max(1, _to_int(data.get('channelDeleteLimit'), default['channelDeleteLimit'])),
+        'roleDeleteLimit': max(1, _to_int(data.get('roleDeleteLimit'), default['roleDeleteLimit'])),
+        'banLimit': max(1, _to_int(data.get('banLimit'), default['banLimit'])),
+        'webhookCreateLimit': max(1, _to_int(data.get('webhookCreateLimit'), default['webhookCreateLimit'])),
+        'punitiveAction': punitive_action,
+        'allowOwner': bool(data.get('allowOwner', default['allowOwner'])),
     }

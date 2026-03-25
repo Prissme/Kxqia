@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import os
+import random
 import threading
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -58,15 +59,18 @@ ROLE_COMPETITIVE_ID = 1406762832720035891
 ROLE_LFN_NEWS_ID = 1455197400560832676
 ROLE_VOTES2PROFILS_ID = 1473663706100531282
 ROLE_POWER_LEAGUE_ID = 1469030334510137398
-ROLE_BUTTON_IDS = {
-    "role_button_scrims",
-    "role_button_competitive",
-    "role_button_lfn_news",
-    "role_button_votes2profils",
-    "role_button_power_league",
+ROLE_SELECT_CUSTOM_ID = "role_selector_menu"
+ROLE_SELECT_VALUES = {
+    "scrims": (ROLE_SCRIMS_ID, "Scrims / Ranked"),
+    "competitive": (ROLE_COMPETITIVE_ID, "Competitive"),
+    "lfn_news": (ROLE_LFN_NEWS_ID, "LFN"),
+    "votes2profils": (ROLE_VOTES2PROFILS_ID, "Votes2Profils"),
+    "power_league": (ROLE_POWER_LEAGUE_ID, "Power League"),
 }
 XP_PER_MESSAGE = 5
 XP_COOLDOWN_SECONDS = 30
+PPC_REWARD_WIN = 20
+PPC_REWARD_DRAW = 8
 MAX_LEVEL = 99
 XP_BASE_BY_LEVEL = 100
 XP_GROWTH_FACTOR = 1.12
@@ -129,7 +133,7 @@ def _build_roles_embed(guild: Optional[discord.Guild]) -> discord.Embed:
         ),
         color=0x5865F2,
     )
-    embed.set_footer(text="Clique sur un bouton pour activer/désactiver ton rôle.")
+    embed.set_footer(text="Choisis un rôle dans le menu déroulant pour l'activer/désactiver.")
     if guild and guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
     return embed
@@ -140,7 +144,7 @@ def _message_has_role_buttons(message: discord.Message) -> bool:
         return False
     for row in message.components:
         for component in row.children:
-            if getattr(component, "custom_id", None) in ROLE_BUTTON_IDS:
+            if getattr(component, "custom_id", None) == ROLE_SELECT_CUSTOM_ID:
                 return True
     return False
 
@@ -250,45 +254,27 @@ class RoleButtonsView(discord.ui.View):
             await _send_ephemeral(interaction, "Une erreur est survenue lors de la modification du rôle.")
             logger.exception("HTTPException lors de la modification du rôle %s.", role_id)
 
-    @discord.ui.button(
-        label="⚔️ Scrims / Ranked",
-        style=discord.ButtonStyle.primary,
-        custom_id="role_button_scrims",
+    @discord.ui.select(
+        custom_id=ROLE_SELECT_CUSTOM_ID,
+        placeholder="🎮 Choisis un rôle à activer/désactiver",
+        min_values=1,
+        max_values=1,
+        options=[
+            discord.SelectOption(label="⚔️ Scrims / Ranked", value="scrims"),
+            discord.SelectOption(label="🏆 Competitive", value="competitive"),
+            discord.SelectOption(label="📰 LFN", value="lfn_news"),
+            discord.SelectOption(label="🗳️ Votes2Profils", value="votes2profils"),
+            discord.SelectOption(label="⚡ Power League", value="power_league"),
+        ],
     )
-    async def scrims_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self._toggle_role(interaction, ROLE_SCRIMS_ID, "Scrims / Ranked")
-
-    @discord.ui.button(
-        label="🏆 Competitive",
-        style=discord.ButtonStyle.success,
-        custom_id="role_button_competitive",
-    )
-    async def competitive_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self._toggle_role(interaction, ROLE_COMPETITIVE_ID, "Competitive")
-
-    @discord.ui.button(
-        label="📰 LFN",
-        style=discord.ButtonStyle.secondary,
-        custom_id="role_button_lfn_news",
-    )
-    async def lfn_news_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self._toggle_role(interaction, ROLE_LFN_NEWS_ID, "LFN")
-
-    @discord.ui.button(
-        label="🗳️ Votes2Profils",
-        style=discord.ButtonStyle.secondary,
-        custom_id="role_button_votes2profils",
-    )
-    async def votes2profils_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self._toggle_role(interaction, ROLE_VOTES2PROFILS_ID, "Votes2Profils")
-
-    @discord.ui.button(
-        label="⚡ Power League",
-        style=discord.ButtonStyle.danger,
-        custom_id="role_button_power_league",
-    )
-    async def power_league_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self._toggle_role(interaction, ROLE_POWER_LEAGUE_ID, "Power League")
+    async def role_selector(self, interaction: discord.Interaction, select: discord.ui.Select):
+        selected_value = select.values[0] if select.values else None
+        role_data = ROLE_SELECT_VALUES.get(selected_value or "")
+        if role_data is None:
+            await _send_ephemeral(interaction, "Rôle invalide sélectionné.")
+            return
+        role_id, role_label = role_data
+        await self._toggle_role(interaction, role_id, role_label)
 
 
 def _role_is_assignable(bot_member: discord.Member, role: discord.Role) -> bool:
@@ -632,6 +618,8 @@ async def help_command(ctx: commands.Context):
             '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
             '**Utilitaires:**\n'
             '`!ping` - Vérifier la latence du bot\n'
+            '`!securitycheck` - Vérifier les protections anti-nuke/anti-raid\n'
+            '`!ppc @membre` - Duel pierre papier ciseau avec récompense XP\n'
             '`!xp [@membre]` - Voir ton niveau XP (max niveau 99)\n'
             '`!topxp` - Classement XP du serveur'
         ),
@@ -644,6 +632,107 @@ async def help_command(ctx: commands.Context):
 async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
 
+
+@bot.command(name='securitycheck')
+@commands.has_permissions(administrator=True)
+async def security_check(ctx: commands.Context):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    nuke_cfg = anti_nuke.config or {}
+    raid_cfg = anti_raid.config or {}
+    checks = [
+        ("Anti-nuke activé", bool(nuke_cfg)),
+        ("Anti-raid activé", bool(raid_cfg)),
+        ("Seuil suppression salons", int(nuke_cfg.get('channelDeleteLimit', 3)) > 0),
+        ("Seuil suppression rôles", int(nuke_cfg.get('roleDeleteLimit', 5)) > 0),
+        ("Seuil joins raid", int(raid_cfg.get('joinThreshold', 10)) > 0),
+        ("Âge min compte (jours)", int(raid_cfg.get('accountAgeDays', 7)) >= 1),
+    ]
+    lines = [f"{'✅' if ok else '⚠️'} {label}" for label, ok in checks]
+    lines.append(f"• Action punitive anti-nuke: `{nuke_cfg.get('punitiveAction', 'strip')}`")
+    lines.append(f"• Lockdown auto anti-raid: `{raid_cfg.get('lockdownOnRaid', True)}`")
+    lines.append(f"• Kick comptes récents: `{raid_cfg.get('kickYoungAccounts', False)}`")
+
+    embed = discord.Embed(
+        title="🛡️ Vérification sécurité anti-nuke / anti-raid",
+        description='\n'.join(lines),
+        color=0x2ecc71,
+    )
+    await ctx.send(embed=embed)
+
+
+def _ppc_choice_emoji(choice: str) -> str:
+    return {
+        "pierre": "🪨",
+        "papier": "📄",
+        "ciseau": "✂️",
+    }[choice]
+
+
+def _ppc_outcome(player_choice: str, bot_choice: str) -> str:
+    if player_choice == bot_choice:
+        return "draw"
+    wins = {
+        "pierre": "ciseau",
+        "papier": "pierre",
+        "ciseau": "papier",
+    }
+    return "win" if wins[player_choice] == bot_choice else "lose"
+
+
+@bot.command(name='ppc')
+async def ppc_command(ctx: commands.Context, member: Optional[discord.Member] = None):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+    if member is None:
+        await ctx.send("Utilisation: `!ppc @User`")
+        return
+    if member.id == ctx.author.id:
+        await ctx.send("Tu ne peux pas te défier toi-même.")
+        return
+    if member.bot:
+        await ctx.send("Tu dois cibler un joueur humain.")
+        return
+
+    choices = ("pierre", "papier", "ciseau")
+    challenger_choice = random.choice(choices)
+    opponent_choice = random.choice(choices)
+    outcome = _ppc_outcome(challenger_choice, opponent_choice)
+
+    result_line = "Égalité parfaite 🤝"
+    if outcome == "win":
+        gained = db.increment_user_xp(str(ctx.guild.id), str(ctx.author.id), str(ctx.author), PPC_REWARD_WIN)
+        result_line = (
+            f"{ctx.author.mention} gagne le duel et remporte **+{PPC_REWARD_WIN} XP** "
+            f"(total: {gained})."
+        )
+    elif outcome == "lose":
+        gained = db.increment_user_xp(str(ctx.guild.id), str(member.id), str(member), PPC_REWARD_WIN)
+        result_line = (
+            f"{member.mention} gagne le duel et remporte **+{PPC_REWARD_WIN} XP** "
+            f"(total: {gained})."
+        )
+    else:
+        xp_a = db.increment_user_xp(str(ctx.guild.id), str(ctx.author.id), str(ctx.author), PPC_REWARD_DRAW)
+        xp_b = db.increment_user_xp(str(ctx.guild.id), str(member.id), str(member), PPC_REWARD_DRAW)
+        result_line = (
+            f"Match nul: {ctx.author.mention} et {member.mention} gagnent "
+            f"**+{PPC_REWARD_DRAW} XP** (totaux: {xp_a}/{xp_b})."
+        )
+
+    embed = discord.Embed(
+        title="🪨📄✂️ Duel Pierre • Papier • Ciseau",
+        description=(
+            f"{ctx.author.mention}: {_ppc_choice_emoji(challenger_choice)} **{challenger_choice}**\n"
+            f"{member.mention}: {_ppc_choice_emoji(opponent_choice)} **{opponent_choice}**\n\n"
+            f"{result_line}"
+        ),
+        color=0x5865F2,
+    )
+    await ctx.send(embed=embed)
 
 
 @bot.command(name='xp')
