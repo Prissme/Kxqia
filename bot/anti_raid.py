@@ -18,6 +18,8 @@ class AntiRaid:
         self.config = (config or {}).get('raid', {})
 
     def handle_member_join(self, member: discord.Member):
+        if is_trusted(str(member.id), member.guild):
+            return
         conf = self.config or {}
         now = datetime.datetime.utcnow()
         bucket = self.join_buckets[member.guild.id]
