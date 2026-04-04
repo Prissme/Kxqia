@@ -4,7 +4,7 @@ Bot Discord en **discord.py** avec dashboard web en **Flask + Flask-SocketIO** p
 
 ## Fonctionnalités
 - Commandes slash `/purge`, `/unpurge`, `/stats_last_3_months`, `/stats_messages`.
-- Commandes préfixées `!ping`, `!help`.
+- Commandes préfixées `!ping`.
 - Dashboard complet : overview, analytics, modération, logs, settings (theme dark/light, export CSV/JSON).
 - WebSocket temps réel (Socket.IO) pour stats live, actions modération, statut bot.
 - API REST (`/api/stats/*`, `/api/logs`, `/api/moderation/*`, `/api/config`, `/api/export/*`).

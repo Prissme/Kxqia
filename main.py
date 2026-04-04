@@ -600,34 +600,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         logger.exception("Erreur dans le gestionnaire de vocaux: %s", exc)
 
 
-@bot.command(name='help')
-async def help_command(ctx: commands.Context):
-    embed = discord.Embed(
-        title='Commandes du Bot',
-        description=(
-            '**Modération:**\n'
-            '`/purge` - Nettoyer et verrouiller un salon\n'
-            '`/unpurge` - Rouvrir un salon verrouillé\n'
-            '`!guidetest @membre` - Ajouter le rôle legacy et 5 crédits\n'
-            '`e!addcredit @membre <raison>` - Ajouter un crédit\n'
-            '`e!removecredit @membre <raison>` - Retirer un crédit\n'
-            '`e!credits [@membre]` - Voir le solde et l’historique des crédits\n'
-            '`e!clb` - Classement des staff par crédits\n\n'
-            '**Analytics:**\n'
-            '`/stats_last_3_months` - Auteurs uniques sur les 3 derniers mois\n'
-            '`/stats_messages` - Classement par nombre de messages sur une période\n\n'
-            '**Utilitaires:**\n'
-            '`!ping` - Vérifier la latence du bot\n'
-            '`!securitycheck` - Vérifier les protections anti-nuke/anti-raid\n'
-            '`!ppc @membre` - Duel pierre papier ciseau avec récompense XP\n'
-            '`!xp [@membre]` - Voir ton niveau XP (max niveau 99)\n'
-            '`!topxp` - Classement XP du serveur'
-        ),
-        color=0x5865F2
-    )
-    await ctx.send(embed=embed)
-
-
 @bot.command(name='ping')
 async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
