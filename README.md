@@ -51,8 +51,15 @@ cp .env.example .env
    - `created_at` (timestamp, non nul, default `now()`)
    - `closed_at` (timestamp, nullable)
    - `closed_by` (text, nullable)
-3. (Optionnel) Restreins l'accès avec les politiques RLS adaptées à ton usage. Le bot utilise la clé service_role et interagit côté serveur uniquement.
-4. Assure-toi que les colonnes `guild_id`, `user_id` et `channel_id` sont indexées si tu attends beaucoup de tickets pour garder des requêtes rapides.
+3. Ajoute aussi une table `user_xp` pour la progression XP avec les colonnes :
+   - `guild_id` (text, non nul)
+   - `user_id` (text, non nul)
+   - `user_name` (text, non nul)
+   - `xp` (integer, non nul, default `0`)
+   - clé primaire composée (`guild_id`, `user_id`)
+4. (Migration automatique) si un ancien fichier `database/local_xp.json` existe, le bot migre ses entrées vers `user_xp` au démarrage.
+5. (Optionnel) Restreins l'accès avec les politiques RLS adaptées à ton usage. Le bot utilise la clé service_role et interagit côté serveur uniquement.
+6. Assure-toi que les colonnes `guild_id`, `user_id` et `channel_id` sont indexées si tu attends beaucoup de tickets pour garder des requêtes rapides.
 
 ## Démarrage local
 ```bash
