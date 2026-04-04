@@ -21,9 +21,13 @@ import { buildInfoEmbed } from "./embeds.js";
 
 export function createClient(logger) {
   const ROLE_CHANNEL_ID = "1267617798658457732";
-  const ROLE_SCRIMS_ID = "1451687979189014548";
+  const ROLE_COMPETITIVE_ID = "1451687979189014548";
   const ROLE_LFN_ID = "1406762832720035891";
-  const ROLE_PTV99_ID = "1464693030937165825";
+  const ROLE_POWER_LEAGUE_ID = "1464693030937165825";
+  const ROLE_LADDER_ID = "1489956692816035840";
+  const ROLE_RANKED_ID = "1489956729104891975";
+  const ROLE_SCRIMS_ID = "1489956747555766372";
+  const ROLE_PROFILE_VOTE_ID = process.env.ROLE_PROFILE_VOTE_ID || "ROLE_ID_A_REMPLACER";
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -95,30 +99,77 @@ export function createClient(logger) {
 
     const roleChannel = await client.channels.fetch(ROLE_CHANNEL_ID).catch(() => null);
     if (roleChannel?.isTextBased()) {
-      const embed = new EmbedBuilder()
+      const embedAnnouncements = new EmbedBuilder()
         .setTitle("Choisis tes rôles")
         .setDescription(
-          `Sélectionne les rôles qui t'intéressent :\n\n` +
-            `• <@&${ROLE_SCRIMS_ID}> : scrims fun/sérieux + recherche ranked\n` +
-            `• <@&${ROLE_LFN_ID}> : LFN + Cups\n` +
-            `• <@&${ROLE_PTV99_ID}> : si tu veux être branché sur les actus de PTV99`
+          `**Les ping d'annonces**\n\n` +
+            `• <@&${ROLE_COMPETITIVE_ID}> : Competitive pour toutes les compétitions du serveur\n` +
+            `• <@&${ROLE_LFN_ID}> : LFN pour toutes les news sur la LFN\n` +
+            `• <@&${ROLE_POWER_LEAGUE_ID}> : Power League pour toutes les news sur la PL`
         )
         .setColor(0x5865f2);
 
-      const row = new ActionRowBuilder().addComponents(
+      const embedTeammates = new EmbedBuilder()
+        .setDescription(
+          `**Les ping teammates**\n\n` +
+            `• <@&${ROLE_LADDER_ID}> : Ladder\n` +
+            `• <@&${ROLE_RANKED_ID}> : Ranked\n` +
+            `• <@&${ROLE_SCRIMS_ID}> : Scrims`
+        )
+        .setColor(0x5865f2);
+
+      const embedOther = new EmbedBuilder()
+        .setDescription(
+          `**Les ping autres**\n\n` +
+            `• ${
+              ROLE_PROFILE_VOTE_ID === "ROLE_ID_A_REMPLACER"
+                ? "Vote de Profils"
+                : `<@&${ROLE_PROFILE_VOTE_ID}>`
+            } : Vote de Profils pour tous les 1v1 de profils ingame`
+        )
+        .setColor(0x5865f2);
+
+      const row1 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId("role_scrims")
-          .setLabel("Scrims / Ranked")
+          .setCustomId("role_competitive")
+          .setLabel("Competitive")
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
           .setCustomId("role_lfn")
-          .setLabel("LFN / Cups")
+          .setLabel("LFN")
           .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
-          .setCustomId("role_ptv99")
-          .setLabel("Actus PTV99")
+          .setCustomId("role_power_league")
+          .setLabel("Power League")
           .setStyle(ButtonStyle.Success)
       );
+
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("role_ladder")
+          .setLabel("Ladder")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("role_ranked")
+          .setLabel("Ranked")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId("role_scrims")
+          .setLabel("Scrims")
+          .setStyle(ButtonStyle.Success)
+      );
+
+      const components = [row1, row2];
+      if (ROLE_PROFILE_VOTE_ID !== "ROLE_ID_A_REMPLACER") {
+        components.push(
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId("role_profile_vote")
+              .setLabel("Vote de Profils")
+              .setStyle(ButtonStyle.Secondary)
+          )
+        );
+      }
 
       const existing = await roleChannel.messages.fetch({ limit: 10 }).catch(() => null);
       const roleMessage = existing?.find(
@@ -128,9 +179,13 @@ export function createClient(logger) {
       );
 
       if (roleMessage) {
-        await roleMessage.edit({ embeds: [embed], components: [row] }).catch(() => {});
+        await roleMessage
+          .edit({ embeds: [embedAnnouncements, embedTeammates, embedOther], components })
+          .catch(() => {});
       } else {
-        await roleChannel.send({ embeds: [embed], components: [row] }).catch(() => {});
+        await roleChannel
+          .send({ embeds: [embedAnnouncements, embedTeammates, embedOther], components })
+          .catch(() => {});
       }
     }
   });
