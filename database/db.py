@@ -134,6 +134,8 @@ def init_db() -> None:
     """Initialize connectivity to Supabase."""
     if not test_connection():
         logger.warning("Supabase connection could not be verified at startup")
+        return
+    _migrate_local_xp_to_supabase()
 
 
 def _ensure_client():
@@ -661,6 +663,7 @@ _LOCAL_CREDITS_PATH = Path(__file__).with_name("local_credits.json")
 _LOCAL_CREDITS_LOCK = threading.Lock()
 _LOCAL_XP_PATH = Path(__file__).with_name("local_xp.json")
 _LOCAL_XP_LOCK = threading.Lock()
+_LOCAL_XP_MIGRATED = False
 
 
 def _load_local_credits() -> dict[str, Any]:
@@ -925,10 +928,49 @@ def _get_local_user_xp(guild_id: str, user_id: str) -> dict[str, Any]:
         }
 
 
+def _migrate_local_xp_to_supabase() -> None:
+    global _LOCAL_XP_MIGRATED
+
+    if _LOCAL_XP_MIGRATED:
+        return
+
+    client = _ensure_client()
+    if not client:
+        return
+
+    with _LOCAL_XP_LOCK:
+        data = _load_local_xp()
+        xp_map = data.get("xp", {})
+        payload = []
+        for guild_id, users in xp_map.items():
+            for user_id, values in users.items():
+                payload.append(
+                    {
+                        "guild_id": str(guild_id),
+                        "user_id": str(user_id),
+                        "user_name": values.get("user_name") or str(user_id),
+                        "xp": int(values.get("xp", 0) or 0),
+                    }
+                )
+
+        if not payload:
+            _LOCAL_XP_MIGRATED = True
+            return
+
+        try:
+            client.table("user_xp").upsert(payload, on_conflict="guild_id,user_id").execute()
+            _save_local_xp({"xp": {}})
+            _LOCAL_XP_MIGRATED = True
+            logger.info("Migration XP locale terminée (%s entrées).", len(payload))
+        except Exception as exc:
+            logger.error("Erreur migration XP locale: %s", exc)
+
+
 def get_user_xp(guild_id: str, user_id: str) -> dict[str, Any]:
     client = _ensure_client()
     if not client:
         return _get_local_user_xp(guild_id, user_id)
+    _migrate_local_xp_to_supabase()
     try:
         resp = (
             client.table("user_xp")
@@ -961,6 +1003,7 @@ def set_user_xp(guild_id: str, user_id: str, user_name: str, xp: int) -> int:
             _save_local_xp(data)
         return int(xp)
 
+    _migrate_local_xp_to_supabase()
     payload = {
         "guild_id": guild_id,
         "user_id": user_id,
@@ -1004,6 +1047,7 @@ def get_top_xp(guild_id: str, limit: int = 10) -> list[dict[str, Any]]:
         entries.sort(key=lambda item: item["xp"], reverse=True)
         return entries[:limit]
 
+    _migrate_local_xp_to_supabase()
     try:
         resp = (
             client.table("user_xp")
