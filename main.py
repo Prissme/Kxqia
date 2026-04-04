@@ -54,18 +54,22 @@ CREDIT_REWARD_ROLE_ID = 1236739808844320829
 CREDIT_DEFAULT = 5
 CREDIT_PROMO_THRESHOLD = 10
 ROLE_CHANNEL_ID = 1267617798658457732
-ROLE_SCRIMS_ID = 1451687979189014548
 ROLE_COMPETITIVE_ID = 1406762832720035891
 ROLE_LFN_NEWS_ID = 1455197400560832676
 ROLE_VOTES2PROFILS_ID = 1473663706100531282
 ROLE_POWER_LEAGUE_ID = 1469030334510137398
+ROLE_LADDER_ID = 1489956692816035840
+ROLE_RANKED_ID = 1489956729104891975
+ROLE_SCRIMS_ID = 1489956747555766372
 ROLE_SELECT_CUSTOM_ID = "role_selector_menu"
 ROLE_SELECT_VALUES = {
-    "scrims": (ROLE_SCRIMS_ID, "Scrims / Ranked"),
     "competitive": (ROLE_COMPETITIVE_ID, "Competitive"),
     "lfn_news": (ROLE_LFN_NEWS_ID, "LFN"),
-    "votes2profils": (ROLE_VOTES2PROFILS_ID, "Votes2Profils"),
     "power_league": (ROLE_POWER_LEAGUE_ID, "Power League"),
+    "ladder": (ROLE_LADDER_ID, "Ladder"),
+    "ranked": (ROLE_RANKED_ID, "Ranked"),
+    "scrims": (ROLE_SCRIMS_ID, "Scrims"),
+    "votes2profils": (ROLE_VOTES2PROFILS_ID, "Vote de Profils"),
 }
 XP_PER_MESSAGE = 5
 XP_COOLDOWN_SECONDS = 30
@@ -120,23 +124,40 @@ def uptime() -> str:
     return f"{int(days)}d {int(hours)}h {int(minutes)}m"
 
 
-def _build_roles_embed(guild: Optional[discord.Guild]) -> discord.Embed:
-    embed = discord.Embed(
-        title="🎮 Choisis ton mode de jeu !",
+def _build_roles_embeds(guild: Optional[discord.Guild]) -> list[discord.Embed]:
+    embed_annonces = discord.Embed(
+        title="Choisis tes rôles",
         description=(
-            "Sélectionne le rôle qui correspond à ta vibe et commence à jouer.\n\n"
-            f"⚔️ <@&{ROLE_SCRIMS_ID}> — Pour les joueurs qui veulent grind le ladder.\n"
-            f"🏆 <@&{ROLE_COMPETITIVE_ID}> — Pour les équipes et tournois sérieux.\n"
-            f"📰 <@&{ROLE_LFN_NEWS_ID}> — Toutes les news intéressantes sur la LFN.\n"
-            f"🗳️ <@&{ROLE_VOTES2PROFILS_ID}> — Pour participer aux Votes2Profils du serveur.\n"
-            f"⚡ <@&{ROLE_POWER_LEAGUE_ID}> — Pour s'inscrire à la Power League du serveur."
+            "**Les ping d'annonces**\n"
+            f"🏆 <@&{ROLE_COMPETITIVE_ID}> — Competitive pour toutes les compétitions du serveur\n"
+            f"📰 <@&{ROLE_LFN_NEWS_ID}> — LFN pour toutes les news sur la LFN\n"
+            f"⚡ <@&{ROLE_POWER_LEAGUE_ID}> — Power League pour toutes les news sur la PL"
         ),
         color=0x5865F2,
     )
-    embed.set_footer(text="Choisis un rôle dans le menu déroulant pour l'activer/désactiver.")
     if guild and guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
-    return embed
+        embed_annonces.set_thumbnail(url=guild.icon.url)
+
+    embed_teammates = discord.Embed(
+        description=(
+            "**Les ping teammates**\n"
+            f"🎯 <@&{ROLE_LADDER_ID}> — Ladder\n"
+            f"🥇 <@&{ROLE_RANKED_ID}> — Ranked\n"
+            f"⚔️ <@&{ROLE_SCRIMS_ID}> — Scrims"
+        ),
+        color=0x5865F2,
+    )
+
+    embed_autres = discord.Embed(
+        description=(
+            "**Les ping autres**\n"
+            f"🗳️ <@&{ROLE_VOTES2PROFILS_ID}> — Vote de Profils pour tous les 1v1 de profils ingame"
+        ),
+        color=0x5865F2,
+    )
+    embed_autres.set_footer(text="Choisis un rôle dans le menu déroulant pour l'activer/désactiver.")
+
+    return [embed_annonces, embed_teammates, embed_autres]
 
 
 def _message_has_role_buttons(message: discord.Message) -> bool:
@@ -198,9 +219,9 @@ async def _send_roles_message(source: str, guild: Optional[discord.Guild] = None
     except discord.HTTPException:
         logger.exception("Erreur lors de la suppression des anciens messages de rôles.")
 
-    embed = _build_roles_embed(target_guild)
+    embeds = _build_roles_embeds(target_guild)
     view = _get_roles_view()
-    await channel.send(embed=embed, view=view)
+    await channel.send(embeds=embeds, view=view)
     logger.info("Embed des rôles envoyé (%s).", source)
 
 
@@ -260,11 +281,13 @@ class RoleButtonsView(discord.ui.View):
         min_values=1,
         max_values=1,
         options=[
-            discord.SelectOption(label="⚔️ Scrims / Ranked", value="scrims"),
             discord.SelectOption(label="🏆 Competitive", value="competitive"),
             discord.SelectOption(label="📰 LFN", value="lfn_news"),
-            discord.SelectOption(label="🗳️ Votes2Profils", value="votes2profils"),
             discord.SelectOption(label="⚡ Power League", value="power_league"),
+            discord.SelectOption(label="🎯 Ladder", value="ladder"),
+            discord.SelectOption(label="🥇 Ranked", value="ranked"),
+            discord.SelectOption(label="⚔️ Scrims", value="scrims"),
+            discord.SelectOption(label="🗳️ Vote de Profils", value="votes2profils"),
         ],
     )
     async def role_selector(self, interaction: discord.Interaction, select: discord.ui.Select):
