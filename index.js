@@ -2,66 +2,85 @@ const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle,
 require('dotenv').config();
 
 const CHANNEL_ID = '1267617798658457732';
-const ROLE_SCRIMS = '1451687979189014548';
 const ROLE_COMP = '1406762832720035891';
 const ROLE_LFN_NEWS = '1455197400560832676';
 const ROLE_VOTES2PROFILS = '1473663706100531282';
 const ROLE_POWER_LEAGUE = '1469030334510137398';
+const ROLE_LADDER = '1489956692816035840';
+const ROLE_RANKED = '1489956729104891975';
+const ROLE_SCRIMS = '1489956747555766372';
 
-const BUTTON_SCRIMS = 'toggle_role_scrims_ranked';
 const BUTTON_COMP = 'toggle_role_competitive';
 const BUTTON_LFN_NEWS = 'toggle_role_lfn_news';
 const BUTTON_VOTES2PROFILS = 'toggle_role_votes2profils';
 const BUTTON_POWER_LEAGUE = 'toggle_role_power_league';
+const BUTTON_LADDER = 'toggle_role_ladder';
+const BUTTON_RANKED = 'toggle_role_ranked';
+const BUTTON_SCRIMS = 'toggle_role_scrims';
 const SAFE_ALLOWED_MENTIONS = { parse: [] };
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
-function buildRoleEmbed() {
-  return new EmbedBuilder()
+function buildRoleEmbeds() {
+  const embed1 = new EmbedBuilder()
     .setTitle('Choisis tes rôles')
     .setDescription(
       [
-        'Clique sur un bouton pour activer ou retirer un rôle (opt-in).',
-        '',
-        `• ⚔️ <@&${ROLE_SCRIMS}> — Scrims / Ranked`,
-        `• 🏆 <@&${ROLE_COMP}> — Competitive`,
-        `• 📰 <@&${ROLE_LFN_NEWS}> — Toutes les news intéressantes sur la LFN`,
-        `• 🗳️ <@&${ROLE_VOTES2PROFILS}> — Pour participer aux Votes2Profils du serveur`,
-        `• ⚡ <@&${ROLE_POWER_LEAGUE}> — Pour s'inscrire à la Power League du serveur`,
+        "**Les ping d'annonces**",
+        `• <@&${ROLE_COMP}> — Competitive pour toutes les compétitions du serveur`,
+        `• <@&${ROLE_LFN_NEWS}> — LFN pour toutes les news sur la LFN`,
+        `• <@&${ROLE_POWER_LEAGUE}> — Power League pour toutes les news sur la PL`,
       ].join('\n')
     );
+
+  const embed2 = new EmbedBuilder()
+    .setDescription(
+      [
+        '**Les ping teammates**',
+        `• <@&${ROLE_LADDER}> — Ladder`,
+        `• <@&${ROLE_RANKED}> — Ranked`,
+        `• <@&${ROLE_SCRIMS}> — Scrims`,
+      ].join('\n')
+    );
+
+  const embed3 = new EmbedBuilder()
+    .setDescription(
+      [
+        '**Les ping autres**',
+        `• <@&${ROLE_VOTES2PROFILS}> — Vote de Profils pour tous les 1v1 de profils ingame`,
+      ].join('\n')
+    );
+
+  return [embed1, embed2, embed3];
 }
 
 function buildRoleButtons() {
-  const scrimsButton = new ButtonBuilder()
-    .setCustomId(BUTTON_SCRIMS)
-    .setLabel('⚔️ Scrims / Ranked')
-    .setStyle(ButtonStyle.Primary);
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(BUTTON_COMP).setLabel('🏆 Competitive').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(BUTTON_LFN_NEWS).setLabel('📰 LFN').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(BUTTON_POWER_LEAGUE).setLabel('⚡ Power League').setStyle(ButtonStyle.Primary)
+  );
 
-  const compButton = new ButtonBuilder()
-    .setCustomId(BUTTON_COMP)
-    .setLabel('🏆 Competitive')
-    .setStyle(ButtonStyle.Success);
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(BUTTON_LADDER).setLabel('🎯 Ladder').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(BUTTON_RANKED).setLabel('🥇 Ranked').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(BUTTON_SCRIMS).setLabel('⚔️ Scrims').setStyle(ButtonStyle.Danger)
+  );
 
-  const lfnNewsButton = new ButtonBuilder()
-    .setCustomId(BUTTON_LFN_NEWS)
-    .setLabel('📰 LFN')
-    .setStyle(ButtonStyle.Secondary);
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(BUTTON_VOTES2PROFILS).setLabel('🗳️ Vote de Profils').setStyle(ButtonStyle.Secondary)
+  );
 
-  const votes2profilsButton = new ButtonBuilder()
-    .setCustomId(BUTTON_VOTES2PROFILS)
-    .setLabel('🗳️ Votes2Profils')
-    .setStyle(ButtonStyle.Secondary);
+  return [row1, row2, row3];
+}
 
-  const powerLeagueButton = new ButtonBuilder()
-    .setCustomId(BUTTON_POWER_LEAGUE)
-    .setLabel('⚡ Power League')
-    .setStyle(ButtonStyle.Danger);
-
-  return new ActionRowBuilder().addComponents(scrimsButton, compButton, lfnNewsButton, votes2profilsButton, powerLeagueButton);
+function isRolePanelMessage(message) {
+  return (
+    message.author?.id === client.user?.id &&
+    message.embeds?.[0]?.title === 'Choisis tes rôles'
+  );
 }
 
 function buildStatusEmbed(message, color) {
@@ -71,11 +90,21 @@ function buildStatusEmbed(message, color) {
 async function sendRoleMessage() {
   const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
-  await channel.send({
-    embeds: [buildRoleEmbed()],
-    components: [buildRoleButtons()],
-    allowedMentions: SAFE_ALLOWED_MENTIONS
-  });
+  const payload = {
+    embeds: buildRoleEmbeds(),
+    components: buildRoleButtons(),
+    allowedMentions: SAFE_ALLOWED_MENTIONS,
+  };
+
+  const existingMessages = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+  const existingPanel = existingMessages?.find((message) => isRolePanelMessage(message));
+
+  if (existingPanel) {
+    await existingPanel.edit(payload).catch(() => null);
+    return;
+  }
+
+  await channel.send(payload);
 }
 
 async function handleToggle(interaction, roleId) {
@@ -177,6 +206,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   if (interaction.customId === BUTTON_POWER_LEAGUE) {
     return handleToggle(interaction, ROLE_POWER_LEAGUE);
+  }
+
+  if (interaction.customId === BUTTON_LADDER) {
+    return handleToggle(interaction, ROLE_LADDER);
+  }
+
+  if (interaction.customId === BUTTON_RANKED) {
+    return handleToggle(interaction, ROLE_RANKED);
   }
 });
 
