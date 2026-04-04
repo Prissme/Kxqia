@@ -5,10 +5,16 @@ export default {
   async execute(interaction) {
     if (interaction.isButton()) {
       const roleByButtonId = {
-        role_scrims: "1451687979189014548",
+        role_competitive: "1451687979189014548",
         role_lfn: "1406762832720035891",
-        role_ptv99: "1464693030937165825"
+        role_power_league: "1464693030937165825",
+        role_ladder: "1489956692816035840",
+        role_ranked: "1489956729104891975",
+        role_scrims: "1489956747555766372"
       };
+      if (process.env.ROLE_PROFILE_VOTE_ID) {
+        roleByButtonId.role_profile_vote = process.env.ROLE_PROFILE_VOTE_ID;
+      }
 
       if (interaction.customId === "ticket_open") {
         const { handleTicketButton } = await import("../tickets.js");
