@@ -6,6 +6,7 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  PermissionFlagsBits,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -75,6 +76,12 @@ export function createClient(logger) {
         .setRequired(true)
     );
   client.commands.set(trap.name, trap);
+  const remake = new SlashCommandBuilder()
+    .setName("remake")
+    .setDescription("Supprime et recrée le salon actuel à l'identique")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+    .setDMPermission(false);
+  client.commands.set(remake.name, remake);
   client.commands.set(ticketCommand.name, ticketCommand);
 
   client.once("ready", async () => {
@@ -83,7 +90,7 @@ export function createClient(logger) {
     const commandGuildId = process.env.GUILD_ID || TICKET_GUILD_ID;
     try {
       await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, commandGuildId), {
-        body: [lockdown.toJSON(), trap.toJSON(), ticketCommand.toJSON()]
+        body: [lockdown.toJSON(), trap.toJSON(), remake.toJSON(), ticketCommand.toJSON()]
       });
       console.log("Slash commands registered.");
     } catch (err) {
