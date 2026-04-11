@@ -438,6 +438,12 @@ def _xp_in_current_level(xp: int) -> tuple[int, int]:
     return max(0, xp - base), required
 
 
+def _safe_embed_text(value: object) -> str:
+    """Escape markdown in dynamic embed values to keep formatting stable."""
+    text = str(value) if value is not None else ""
+    return discord.utils.escape_markdown(text)
+
+
 def _build_progress_bar(progress: int, required: int, size: int = 12) -> str:
     if required <= 0:
         ratio = 1.0
@@ -777,9 +783,10 @@ async def topxp_command(ctx: commands.Context):
         user_id = entry.get('user_id')
         member = ctx.guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
         name = member.display_name if member else (entry.get('user_name') or f'ID {user_id}')
+        safe_name = _safe_embed_text(name)
         xp_value = int(entry.get('xp', 0) or 0)
         level = _xp_to_level(xp_value)
-        lines.append(f'**{index}.** {name} — Niveau {level} ({xp_value} XP)')
+        lines.append(f'**{index}.** {safe_name} — Niveau {level} ({xp_value} XP)')
 
     embed = discord.Embed(
         title='🏆 Top XP du serveur',
@@ -915,8 +922,8 @@ async def credits(ctx: commands.Context, member: Optional[discord.Member] = None
                 delta_value = int(delta)
             except (TypeError, ValueError):
                 delta_value = 0
-            reason = entry.get("reason") or "Raison non renseignée"
-            actor = entry.get("actor_name") or entry.get("actor_id") or "Inconnu"
+            reason = _safe_embed_text(entry.get("reason") or "Raison non renseignée")
+            actor = _safe_embed_text(entry.get("actor_name") or entry.get("actor_id") or "Inconnu")
             total_value = entry.get("total")
             total_text = f" (total {total_value})" if total_value is not None else ""
             timestamp = entry.get("timestamp")
@@ -965,8 +972,9 @@ async def credits_leaderboard(ctx: commands.Context):
     for index, entry in enumerate(top_entries, start=1):
         member = ctx.guild.get_member(int(entry.get("user_id") or 0))
         name = member.display_name if member else f"ID {entry.get('user_id')}"
+        safe_name = _safe_embed_text(name)
         credits_value = entry.get("credits", 0)
-        lines.append(f"**{index}.** {name} — {credits_value} crédits")
+        lines.append(f"**{index}.** {safe_name} — {credits_value} crédits")
 
     embed = discord.Embed(
         title="🏆 Classement des staff (crédits)",
