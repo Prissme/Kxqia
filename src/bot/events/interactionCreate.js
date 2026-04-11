@@ -59,6 +59,35 @@ export default {
     } else if (interaction.commandName === "ticket") {
       const { handleTicketCommand } = await import("../tickets.js");
       await handleTicketCommand(interaction);
+    } else if (interaction.commandName === "remake") {
+      if (!interaction.guild || !interaction.channel) {
+        await interaction.reply({
+          embeds: [buildErrorEmbed("Cette commande doit être utilisée dans un serveur.")],
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (!interaction.channel.isTextBased()) {
+        await interaction.reply({
+          embeds: [buildErrorEmbed("Ce type de salon n'est pas supporté pour /remake.")],
+          ephemeral: true
+        });
+        return;
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const oldChannel = interaction.channel;
+      const clonedChannel = await oldChannel.clone({
+        reason: `/remake demandé par ${interaction.user.tag}`
+      });
+      await clonedChannel.setPosition(oldChannel.position).catch(() => {});
+      await oldChannel.delete(`/remake demandé par ${interaction.user.tag}`).catch(() => {});
+
+      await interaction.editReply({
+        embeds: [buildSuccessEmbed(`Salon recréé: ${clonedChannel}`)]
+      });
     }
   }
 };
