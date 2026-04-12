@@ -88,6 +88,12 @@ _roles_view: Optional["RoleButtonsView"] = None
 URL_REGEX = re.compile(r"(https?://[^\s]+|www\.[^\s]+)", re.IGNORECASE)
 DISCORD_INVITE_REGEX = re.compile(r"(?:https?://)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/\S+", re.IGNORECASE)
 ALLOWED_VIDEO_DOMAINS = ("youtube.com", "youtu.be", "tiktok.com")
+ALLOWED_GIF_DOMAINS = (
+    "tenor.com",
+    "giphy.com",
+    "discordapp.com",
+    "discord.com",
+)
 
 
 def _is_privileged_member(member: discord.Member) -> bool:
@@ -96,12 +102,20 @@ def _is_privileged_member(member: discord.Member) -> bool:
 
 
 def _is_allowed_link(url: str) -> bool:
-    lowered = url.lower().strip("()[]<>.,!?\"'")
-    if lowered.endswith(".gif"):
+    normalized = url.lower().strip("()[]<>.,!?\"'")
+    if not normalized.startswith(("http://", "https://")):
+        normalized = f"https://{normalized}"
+
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+
+    if path.endswith((".gif", ".gifv")):
         return True
-    if not lowered.startswith(("http://", "https://")):
-        lowered = f"https://{lowered}"
-    host = (urlparse(lowered).hostname or "").lower()
+
+    if any(host == domain or host.endswith(f".{domain}") for domain in ALLOWED_GIF_DOMAINS):
+        return True
+
     return any(host == domain or host.endswith(f".{domain}") for domain in ALLOWED_VIDEO_DOMAINS)
 
 
