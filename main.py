@@ -4,10 +4,12 @@ import json
 import logging
 import os
 import random
+import re
 import threading
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Iterable, Optional
+from urllib.parse import urlparse
 
 import discord
 from discord import app_commands
@@ -47,6 +49,7 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix=commands.when_mentioned_or('!', 'e!'), intents=intents, help_command=None)
 bot.trap_words: dict[int, str] = {}
+bot.blacklist_words: dict[int, set[str]] = {}
 custom_voice_manager = CustomVoiceManager(bot)
 bot_status = {'ready': False}
 LEGACY_VOTESTAFF_ROLE_ID = 1236738451018223768
@@ -82,6 +85,32 @@ _xp_last_gain_at: dict[tuple[int, int], datetime.datetime] = {}
 _background_tasks_started = False
 _role_view_added = False
 _roles_view: Optional["RoleButtonsView"] = None
+URL_REGEX = re.compile(r"(https?://[^\s]+|www\.[^\s]+)", re.IGNORECASE)
+DISCORD_INVITE_REGEX = re.compile(r"(?:https?://)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/\S+", re.IGNORECASE)
+ALLOWED_VIDEO_DOMAINS = ("youtube.com", "youtu.be", "tiktok.com")
+
+
+def _is_privileged_member(member: discord.Member) -> bool:
+    permissions = member.guild_permissions
+    return permissions.administrator or permissions.manage_guild
+
+
+def _is_allowed_link(url: str) -> bool:
+    lowered = url.lower().strip("()[]<>.,!?\"'")
+    if lowered.endswith(".gif"):
+        return True
+    if not lowered.startswith(("http://", "https://")):
+        lowered = f"https://{lowered}"
+    host = (urlparse(lowered).hostname or "").lower()
+    return any(host == domain or host.endswith(f".{domain}") for domain in ALLOWED_VIDEO_DOMAINS)
+
+
+def _extract_blocked_links(content: str) -> list[str]:
+    blocked_links = []
+    for raw_url in URL_REGEX.findall(content):
+        if not _is_allowed_link(raw_url):
+            blocked_links.append(raw_url)
+    return blocked_links
 
 # --- Flask + SocketIO
 app = Flask(__name__, template_folder='dashboard/templates', static_folder='dashboard/static')
@@ -511,11 +540,52 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
-    await _grant_message_xp(message)
-    await bot.process_commands(message)
     guild = message.guild
     if guild is None:
         return
+    if isinstance(message.author, discord.Member) and not _is_privileged_member(message.author):
+        lowered_content = message.content.lower()
+        blocked_links = _extract_blocked_links(message.content)
+        contains_discord_invite = bool(DISCORD_INVITE_REGEX.search(lowered_content))
+        blacklist_words = bot.blacklist_words.get(guild.id, set())
+        contains_blacklisted_word = any(word in lowered_content for word in blacklist_words)
+
+        if blocked_links or contains_discord_invite or contains_blacklisted_word:
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                logger.warning("Impossible de supprimer un message bloqué (permissions manquantes).")
+            except discord.HTTPException:
+                logger.warning("Échec suppression message bloqué (HTTPException).")
+            else:
+                if contains_blacklisted_word:
+                    await message.channel.send(
+                        f"{message.author.mention} ton message a été supprimé (mot blacklisté).",
+                        delete_after=6,
+                    )
+                else:
+                    await message.channel.send(
+                        f"{message.author.mention} les liens web et invitations Discord sont bloqués ici.",
+                        delete_after=6,
+                    )
+                db.log_event(
+                    'moderation',
+                    'info',
+                    'Message supprimé automatiquement',
+                    user_id=str(message.author.id),
+                    user_name=str(message.author),
+                    channel_id=str(message.channel.id),
+                    guild_id=str(guild.id),
+                    metadata={
+                        'contains_discord_invite': contains_discord_invite,
+                        'blocked_links': blocked_links,
+                        'contains_blacklisted_word': contains_blacklisted_word,
+                    },
+                )
+                return
+
+    await _grant_message_xp(message)
+    await bot.process_commands(message)
     await batch_logger.log(
         {
             'type': 'message',
@@ -1400,6 +1470,42 @@ async def trap(interaction: discord.Interaction, mot: str):
     await interaction.response.send_message(
         f"🪤 La prochaine personne qui dit '{mot}' prend 10 minutes de timeout."
     )
+
+
+@bot.tree.command(name='addblacklist', description='Ajoute un mot à supprimer automatiquement')
+@app_commands.describe(mot='Mot à bloquer automatiquement')
+async def addblacklist(interaction: discord.Interaction, mot: str):
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
+        return
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message('Impossible de vérifier tes permissions.', ephemeral=True)
+        return
+    if not _is_privileged_member(interaction.user):
+        await interaction.response.send_message(
+            'Tu dois être administrateur ou avoir la permission Gérer le serveur.',
+            ephemeral=True,
+        )
+        return
+
+    cleaned = mot.strip().lower()
+    if not cleaned:
+        await interaction.response.send_message('Le mot blacklisté ne peut pas être vide.', ephemeral=True)
+        return
+
+    guild_words = bot.blacklist_words.setdefault(interaction.guild.id, set())
+    guild_words.add(cleaned)
+    db.log_event(
+        'moderation',
+        'info',
+        'Mot ajouté à la blacklist',
+        user_id=str(interaction.user.id),
+        user_name=str(interaction.user),
+        channel_id=str(interaction.channel.id) if interaction.channel else None,
+        guild_id=str(interaction.guild.id),
+        metadata={'mot': cleaned},
+    )
+    await interaction.response.send_message(f"✅ `{cleaned}` a été ajouté à la blacklist.")
 
 
 @bot.tree.command(name='lockdown', description='Active/désactive le lockdown du serveur')
