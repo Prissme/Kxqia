@@ -1247,7 +1247,7 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             inline=False,
         )
         embed.add_field(
-            name='Ce qu'il faut retenir',
+            name="Ce qu'il faut retenir",
             value='\n'.join(
                 [
                     '• 12 joueurs → 3 manches',
@@ -1283,7 +1283,7 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             name='Points',
             value='\n'.join(
                 [
-                    '• Placement = points (définis par l'host)',
+                    "• Placement = points (définis par l'host)",
                     '• Chaque kill = +2 points',
                     '• Total des 3 manches = classement final',
                 ]
@@ -1294,7 +1294,7 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             name='Égalité',
             value='\n'.join(
                 [
-                    '• Égalité → 1v1 (mode au choix de l'host)',
+                    "• Égalité → 1v1 (mode au choix de l'host)",
                 ]
             ),
             inline=False,
