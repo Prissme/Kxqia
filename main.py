@@ -712,6 +712,79 @@ async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
 
 
+@bot.command(name='blacklist')
+async def blacklist_cmd(ctx: commands.Context):
+    """Affiche la liste des mots blacklistés du serveur."""
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    blacklist_words = bot.blacklist_words.get(ctx.guild.id, set())
+    
+    if not blacklist_words:
+        embed = discord.Embed(
+            title="📋 Liste des mots blacklistés",
+            description="Aucun mot blacklisté pour le moment.",
+            color=0x5865F2,
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    # Créer une liste des mots blacklistés
+    sorted_words = sorted(list(blacklist_words))
+    words_text = '\n'.join([f"• `{word}`" for word in sorted_words])
+    
+    embed = discord.Embed(
+        title="📋 Liste des mots blacklistés",
+        description=f"**Total:** {len(blacklist_words)} mot(s)\n\n{words_text}",
+        color=0x5865F2,
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.tree.command(name='removeblacklist', description='Retire un mot de la blacklist')
+@app_commands.describe(mot='Mot à retirer de la blacklist')
+async def removeblacklist(interaction: discord.Interaction, mot: str):
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
+        return
+
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message('Impossible de vérifier tes permissions.', ephemeral=True)
+        return
+
+    if not _is_privileged_member(interaction.user):
+        await interaction.response.send_message(
+            'Tu dois être administrateur ou avoir la permission Gérer le serveur.',
+            ephemeral=True,
+        )
+        return
+
+    cleaned = mot.strip().lower()
+    if not cleaned:
+        await interaction.response.send_message('Le mot ne peut pas être vide.', ephemeral=True)
+        return
+
+    guild_words = bot.blacklist_words.get(interaction.guild.id, set())
+    
+    if cleaned not in guild_words:
+        await interaction.response.send_message(f"Le mot `{cleaned}` n'est pas dans la blacklist.", ephemeral=True)
+        return
+
+    guild_words.remove(cleaned)
+    db.log_event(
+        'moderation',
+        'info',
+        'Mot retiré de la blacklist',
+        user_id=str(interaction.user.id),
+        user_name=str(interaction.user),
+        channel_id=str(interaction.channel.id) if interaction.channel else None,
+        guild_id=str(interaction.guild.id),
+        metadata={'mot': cleaned},
+    )
+    await interaction.response.send_message(f"✅ `{cleaned}` a été retiré de la blacklist.", ephemeral=True)
+
+
 @bot.command(name='securitycheck')
 @commands.has_permissions(administrator=True)
 async def security_check(ctx: commands.Context):
@@ -1174,7 +1247,7 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             inline=False,
         )
         embed.add_field(
-            name='Ce qu’il faut retenir',
+            name='Ce qu'il faut retenir',
             value='\n'.join(
                 [
                     '• 12 joueurs → 3 manches',
@@ -1210,7 +1283,7 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             name='Points',
             value='\n'.join(
                 [
-                    '• Placement = points (définis par l’host)',
+                    '• Placement = points (définis par l'host)',
                     '• Chaque kill = +2 points',
                     '• Total des 3 manches = classement final',
                 ]
@@ -1221,7 +1294,7 @@ def _pcsd_content_embed(option: str) -> discord.Embed:
             name='Égalité',
             value='\n'.join(
                 [
-                    '• Égalité → 1v1 (mode au choix de l’host)',
+                    '• Égalité → 1v1 (mode au choix de l'host)',
                 ]
             ),
             inline=False,
@@ -1318,7 +1391,7 @@ async def clean_voice(ctx: commands.Context):
     await ctx.send(f"✅ Nettoyage terminé : {cleaned} salon(x) supprimé(s).")
 
 
-@bot.tree.command(name='setup_roles', description='Renvoie l’embed des rôles dans le salon configuré')
+@bot.tree.command(name='setup_roles', description='Renvoie l\'embed des rôles dans le salon configuré')
 async def setup_roles(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
