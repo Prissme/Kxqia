@@ -557,6 +557,39 @@ async def on_message(message: discord.Message):
     guild = message.guild
     if guild is None:
         return
+
+    image_attachments = [
+        attachment
+        for attachment in message.attachments
+        if (attachment.content_type and attachment.content_type.startswith('image/'))
+        or attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'))
+    ]
+    if len(image_attachments) == 4:
+        try:
+            await message.delete()
+        except discord.Forbidden:
+            logger.warning("Impossible de supprimer un message avec exactement 4 images (permissions manquantes).")
+        except discord.HTTPException:
+            logger.warning("Échec suppression message avec exactement 4 images (HTTPException).")
+        else:
+            await message.channel.send(
+                f"{message.author.mention} ton message a été supprimé (exactement 4 images).",
+                delete_after=6,
+            )
+            db.log_event(
+                'moderation',
+                'info',
+                'Message supprimé automatiquement (4 images)',
+                user_id=str(message.author.id),
+                user_name=str(message.author),
+                channel_id=str(message.channel.id),
+                guild_id=str(guild.id),
+                metadata={
+                    'images_count': len(image_attachments),
+                },
+            )
+            return
+
     if isinstance(message.author, discord.Member) and not _is_privileged_member(message.author):
         lowered_content = message.content.lower()
         blocked_links = _extract_blocked_links(message.content)
@@ -1593,6 +1626,72 @@ async def addblacklist(interaction: discord.Interaction, mot: str):
         metadata={'mot': cleaned},
     )
     await interaction.response.send_message(f"✅ `{cleaned}` a été ajouté à la blacklist.")
+
+
+@bot.tree.command(name='removeblacklist', description='Retire un mot de la blacklist')
+@app_commands.describe(mot='Mot à retirer de la blacklist')
+async def removeblacklist(interaction: discord.Interaction, mot: str):
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
+        return
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message('Impossible de vérifier tes permissions.', ephemeral=True)
+        return
+    if not _is_privileged_member(interaction.user):
+        await interaction.response.send_message(
+            'Tu dois être administrateur ou avoir la permission Gérer le serveur.',
+            ephemeral=True,
+        )
+        return
+
+    cleaned = mot.strip().lower()
+    if not cleaned:
+        await interaction.response.send_message('Le mot à retirer ne peut pas être vide.', ephemeral=True)
+        return
+
+    guild_words = bot.blacklist_words.setdefault(interaction.guild.id, set())
+    if cleaned not in guild_words:
+        await interaction.response.send_message(f"ℹ️ `{cleaned}` n'est pas dans la blacklist.", ephemeral=True)
+        return
+
+    guild_words.remove(cleaned)
+    db.log_event(
+        'moderation',
+        'info',
+        'Mot retiré de la blacklist',
+        user_id=str(interaction.user.id),
+        user_name=str(interaction.user),
+        channel_id=str(interaction.channel.id) if interaction.channel else None,
+        guild_id=str(interaction.guild.id),
+        metadata={'mot': cleaned},
+    )
+    await interaction.response.send_message(f"✅ `{cleaned}` a été retiré de la blacklist.")
+
+
+@bot.tree.command(name='blacklist', description='Affiche tous les mots blacklistés')
+async def blacklist(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
+        return
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message('Impossible de vérifier tes permissions.', ephemeral=True)
+        return
+    if not _is_privileged_member(interaction.user):
+        await interaction.response.send_message(
+            'Tu dois être administrateur ou avoir la permission Gérer le serveur.',
+            ephemeral=True,
+        )
+        return
+
+    guild_words = sorted(bot.blacklist_words.get(interaction.guild.id, set()))
+    if not guild_words:
+        await interaction.response.send_message('La blacklist est vide.', ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        "📋 Mots blacklistés :\n" + '\n'.join(f"• `{word}`" for word in guild_words),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name='lockdown', description='Active/désactive le lockdown du serveur')
