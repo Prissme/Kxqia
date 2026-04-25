@@ -76,6 +76,26 @@ export function createClient(logger) {
         .setRequired(true)
     );
   client.commands.set(trap.name, trap);
+  const blacklist = new SlashCommandBuilder()
+    .setName("blacklist")
+    .setDescription("Afficher la blacklist ou ajouter un mot")
+    .addStringOption((option) =>
+      option
+        .setName("mot")
+        .setDescription("Mot à ajouter (laisse vide pour afficher la liste)")
+        .setRequired(false)
+    );
+  client.commands.set(blacklist.name, blacklist);
+  const removeBlacklist = new SlashCommandBuilder()
+    .setName("removeblacklist")
+    .setDescription("Retirer un mot de la blacklist")
+    .addStringOption((option) =>
+      option
+        .setName("mot")
+        .setDescription("Mot à retirer de la blacklist")
+        .setRequired(true)
+    );
+  client.commands.set(removeBlacklist.name, removeBlacklist);
   const remake = new SlashCommandBuilder()
     .setName("remake")
     .setDescription("Supprime et recrée le salon actuel à l'identique")
@@ -90,7 +110,14 @@ export function createClient(logger) {
     const commandGuildId = process.env.GUILD_ID || TICKET_GUILD_ID;
     try {
       await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, commandGuildId), {
-        body: [lockdown.toJSON(), trap.toJSON(), remake.toJSON(), ticketCommand.toJSON()]
+        body: [
+          lockdown.toJSON(),
+          trap.toJSON(),
+          blacklist.toJSON(),
+          removeBlacklist.toJSON(),
+          remake.toJSON(),
+          ticketCommand.toJSON()
+        ]
       });
       console.log("Slash commands registered.");
     } catch (err) {
