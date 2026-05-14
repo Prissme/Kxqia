@@ -54,10 +54,7 @@ bot.trap_words: dict[int, str] = {}
 bot.blacklist_words: dict[int, set[str]] = {}
 custom_voice_manager = CustomVoiceManager(bot)
 bot_status = {'ready': False}
-LEGACY_VOTESTAFF_ROLE_ID = 1236738451018223768
-CREDIT_REWARD_ROLE_ID = 1236739808844320829
-CREDIT_DEFAULT = 5
-CREDIT_PROMO_THRESHOLD = 10
+
 ROLE_CHANNEL_ID = 1267617798658457732
 ROLE_COMPETITIVE_ID = 1406762832720035891
 ROLE_LFN_NEWS_ID = 1455197400560832676
@@ -78,8 +75,6 @@ ROLE_SELECT_VALUES = {
 }
 XP_PER_MESSAGE = 5
 XP_COOLDOWN_SECONDS = 30
-PPC_REWARD_WIN = 20
-PPC_REWARD_DRAW = 8
 MAX_LEVEL = 99
 XP_BASE_BY_LEVEL = 100
 XP_GROWTH_FACTOR = 1.12
@@ -353,60 +348,6 @@ def _get_bot_member(guild: discord.Guild) -> Optional[discord.Member]:
     return guild.me or guild.get_member(bot.user.id)
 
 
-def _get_credit_roles(guild: discord.Guild) -> tuple[Optional[discord.Role], Optional[discord.Role]]:
-    legacy_role = guild.get_role(LEGACY_VOTESTAFF_ROLE_ID)
-    reward_role = guild.get_role(CREDIT_REWARD_ROLE_ID)
-    return legacy_role, reward_role
-
-
-async def _sync_credit_roles(member: discord.Member, credits: int) -> list[str]:
-    guild = member.guild
-    updates: list[str] = []
-    bot_member = _get_bot_member(guild)
-    if bot_member is None or not bot_member.guild_permissions.manage_roles:
-        return ["Permissions insuffisantes pour gérer les rôles."]
-
-    legacy_role, reward_role = _get_credit_roles(guild)
-
-    if legacy_role and _role_is_assignable(bot_member, legacy_role):
-        if credits <= 0 and legacy_role in member.roles:
-            try:
-                await member.remove_roles(legacy_role, reason="Crédits épuisés")
-                updates.append("Rôle legacy retiré (crédits à 0).")
-            except discord.Forbidden:
-                updates.append("Permissions insuffisantes pour retirer le rôle legacy.")
-            except discord.HTTPException:
-                updates.append("Impossible de retirer le rôle legacy pour le moment.")
-        elif credits > 0 and legacy_role not in member.roles:
-            try:
-                await member.add_roles(legacy_role, reason="Crédits attribués")
-                updates.append("Rôle legacy ajouté.")
-            except discord.Forbidden:
-                updates.append("Permissions insuffisantes pour ajouter le rôle legacy.")
-            except discord.HTTPException:
-                updates.append("Impossible d'ajouter le rôle legacy pour le moment.")
-    elif legacy_role is None:
-        updates.append("Rôle legacy introuvable.")
-    else:
-        updates.append("Rôle legacy non attribuable (hiérarchie Discord).")
-
-    if reward_role and _role_is_assignable(bot_member, reward_role):
-        if credits >= CREDIT_PROMO_THRESHOLD and reward_role not in member.roles:
-            try:
-                await member.add_roles(reward_role, reason="Crédits atteints")
-                updates.append("Rôle récompense ajouté (10 crédits).")
-            except discord.Forbidden:
-                updates.append("Permissions insuffisantes pour ajouter le rôle récompense.")
-            except discord.HTTPException:
-                updates.append("Impossible d'ajouter le rôle récompense pour le moment.")
-    elif reward_role is None:
-        updates.append("Rôle récompense introuvable.")
-    else:
-        updates.append("Rôle récompense non attribuable (hiérarchie Discord).")
-
-    return updates
-
-
 # --- Discord helpers
 
 def _iter_message_channels(guild: discord.Guild) -> Iterable[discord.abc.Messageable]:
@@ -530,19 +471,30 @@ async def _grant_message_xp(message: discord.Message) -> None:
                 xp_required=xp_required,
             )
 
-            content = f"{message.author.mention} Level up ! 🎉 Tu es maintenant **niveau {new_level}**"
+            # Formatage sous forme d'Embed pour éviter les notifications de ping
+            description = f"🎉 {message.author.mention} vient de passer au **niveau {new_level}** !"
             if granted_role:
-                content += f" — rôle {granted_role.mention} obtenu !"
+                description += f"\nTu as obtenu le rôle {granted_role.mention} !"
+
+            embed = discord.Embed(
+                title="🆙 Level Up !",
+                description=description,
+                color=0x5865F2
+            )
 
             if card_buf:
                 file = discord.File(card_buf, filename="levelup.png")
-                await message.channel.send(content=content, file=file)
+                embed.set_image(url="attachment://levelup.png")
+                await message.channel.send(embed=embed, file=file)
             else:
-                await message.channel.send(content)
+                await message.channel.send(embed=embed)
         else:
-            await message.channel.send(
-                f"{message.author.mention} Level up! 🎉 Tu es maintenant niveau {new_level}."
+            embed = discord.Embed(
+                title="🆙 Level Up !",
+                description=f"🎉 {message.author.mention} vient de passer au **niveau {new_level}** !",
+                color=0x5865F2
             )
+            await message.channel.send(embed=embed)
 
 
 # --- Discord events and commands
@@ -624,6 +576,12 @@ async def on_message(message: discord.Message):
                         f"{message.author.mention} ton message a été supprimé (mot blacklisté).",
                         delete_after=6,
                     )
+                    try:
+                        await message.author.timeout(datetime.timedelta(seconds=60), reason="Utilisation d'un mot blacklisté")
+                    except discord.Forbidden:
+                        logger.warning(f"Impossible de timeout {message.author} (permissions manquantes).")
+                    except discord.HTTPException:
+                        logger.warning(f"Échec du timeout pour {message.author} (HTTPException).")
                 else:
                     await message.channel.send(
                         f"{message.author.mention} les liens web et invitations Discord sont bloqués ici.",
@@ -861,78 +819,6 @@ async def security_check(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
-def _ppc_choice_emoji(choice: str) -> str:
-    return {
-        "pierre": "🪨",
-        "papier": "📄",
-        "ciseau": "✂️",
-    }[choice]
-
-
-def _ppc_outcome(player_choice: str, bot_choice: str) -> str:
-    if player_choice == bot_choice:
-        return "draw"
-    wins = {
-        "pierre": "ciseau",
-        "papier": "pierre",
-        "ciseau": "papier",
-    }
-    return "win" if wins[player_choice] == bot_choice else "lose"
-
-
-@bot.command(name='ppc')
-async def ppc_command(ctx: commands.Context, member: Optional[discord.Member] = None):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-    if member is None:
-        await ctx.send("Utilisation: `!ppc @User`")
-        return
-    if member.id == ctx.author.id:
-        await ctx.send("Tu ne peux pas te défier toi-même.")
-        return
-    if member.bot:
-        await ctx.send("Tu dois cibler un joueur humain.")
-        return
-
-    choices = ("pierre", "papier", "ciseau")
-    challenger_choice = random.choice(choices)
-    opponent_choice = random.choice(choices)
-    outcome = _ppc_outcome(challenger_choice, opponent_choice)
-
-    result_line = "Égalité parfaite 🤝"
-    if outcome == "win":
-        gained = db.increment_user_xp(str(ctx.guild.id), str(ctx.author.id), str(ctx.author), PPC_REWARD_WIN)
-        result_line = (
-            f"{ctx.author.mention} gagne le duel et remporte **+{PPC_REWARD_WIN} XP** "
-            f"(total: {gained})."
-        )
-    elif outcome == "lose":
-        gained = db.increment_user_xp(str(ctx.guild.id), str(member.id), str(member), PPC_REWARD_WIN)
-        result_line = (
-            f"{member.mention} gagne le duel et remporte **+{PPC_REWARD_WIN} XP** "
-            f"(total: {gained})."
-        )
-    else:
-        xp_a = db.increment_user_xp(str(ctx.guild.id), str(ctx.author.id), str(ctx.author), PPC_REWARD_DRAW)
-        xp_b = db.increment_user_xp(str(ctx.guild.id), str(member.id), str(member), PPC_REWARD_DRAW)
-        result_line = (
-            f"Match nul: {ctx.author.mention} et {member.mention} gagnent "
-            f"**+{PPC_REWARD_DRAW} XP** (totaux: {xp_a}/{xp_b})."
-        )
-
-    embed = discord.Embed(
-        title="🪨📄✂️ Duel Pierre • Papier • Ciseau",
-        description=(
-            f"{ctx.author.mention}: {_ppc_choice_emoji(challenger_choice)} **{challenger_choice}**\n"
-            f"{member.mention}: {_ppc_choice_emoji(opponent_choice)} **{opponent_choice}**\n\n"
-            f"{result_line}"
-        ),
-        color=0x5865F2,
-    )
-    await ctx.send(embed=embed)
-
-
 @bot.command(name='xp')
 async def xp_command(ctx: commands.Context, member: Optional[discord.Member] = None):
     if ctx.guild is None:
@@ -1009,193 +895,6 @@ async def topxp_command(ctx: commands.Context):
             color=0x5865F2,
         )
         await ctx.send(embed=embed)
-
-
-@bot.command(name='guidetest')
-@commands.has_permissions(administrator=True)
-async def guidetest(ctx: commands.Context, member: discord.Member):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-
-    bot_member = _get_bot_member(ctx.guild)
-    if bot_member is None or not bot_member.guild_permissions.manage_roles:
-        await ctx.send("Je n'ai pas la permission de gérer les rôles.")
-        return
-
-    legacy_role, _ = _get_credit_roles(ctx.guild)
-    if legacy_role is None:
-        await ctx.send("Le rôle legacy est introuvable.")
-        return
-    if not _role_is_assignable(bot_member, legacy_role):
-        await ctx.send("Je ne peux pas attribuer le rôle legacy (hiérarchie Discord).")
-        return
-
-    db.set_user_credits(str(ctx.guild.id), str(member.id), CREDIT_DEFAULT)
-    if legacy_role not in member.roles:
-        try:
-            await member.add_roles(legacy_role, reason="Ajout via !guidetest")
-        except discord.Forbidden:
-            await ctx.send("Permissions insuffisantes pour attribuer le rôle legacy.")
-            return
-        except discord.HTTPException:
-            await ctx.send("Impossible d'attribuer le rôle legacy pour le moment.")
-            return
-
-    updates = await _sync_credit_roles(member, CREDIT_DEFAULT)
-    updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
-    db.record_credit_change(
-        guild_id=str(ctx.guild.id),
-        user_id=str(member.id),
-        user_name=str(member),
-        delta=CREDIT_DEFAULT,
-        total=CREDIT_DEFAULT,
-        reason="Ajout via !guidetest",
-        actor_id=str(ctx.author.id),
-        actor_name=str(ctx.author),
-    )
-    await ctx.send(f"✅ {member.mention} a reçu {CREDIT_DEFAULT} crédits.{updates_text}")
-
-
-@bot.command(name='addcredit')
-@commands.has_permissions(administrator=True)
-async def addcredit(ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-    if reason is None or not reason.strip():
-        await ctx.send('Merci de fournir une raison : `e!addcredit @membre <raison>`.')
-        return
-
-    new_credits = db.increment_user_credits(str(ctx.guild.id), str(member.id), 1)
-    updates = await _sync_credit_roles(member, new_credits)
-    updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
-    db.record_credit_change(
-        guild_id=str(ctx.guild.id),
-        user_id=str(member.id),
-        user_name=str(member),
-        delta=1,
-        total=new_credits,
-        reason=reason.strip(),
-        actor_id=str(ctx.author.id),
-        actor_name=str(ctx.author),
-    )
-    await ctx.send(
-        f"✅ {member.mention} gagne 1 crédit (total: {new_credits}). Raison : {reason.strip()}.{updates_text}"
-    )
-
-
-@bot.command(name='removecredit')
-@commands.has_permissions(administrator=True)
-async def removecredit(ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-    if reason is None or not reason.strip():
-        await ctx.send('Merci de fournir une raison : `e!removecredit @membre <raison>`.')
-        return
-
-    new_credits = db.increment_user_credits(str(ctx.guild.id), str(member.id), -1)
-    updates = await _sync_credit_roles(member, new_credits)
-    updates_text = f"\nMises à jour rôles: {', '.join(updates)}" if updates else ""
-    db.record_credit_change(
-        guild_id=str(ctx.guild.id),
-        user_id=str(member.id),
-        user_name=str(member),
-        delta=-1,
-        total=new_credits,
-        reason=reason.strip(),
-        actor_id=str(ctx.author.id),
-        actor_name=str(ctx.author),
-    )
-    await ctx.send(
-        f"⚠️ {member.mention} perd 1 crédit (total: {new_credits}). Raison : {reason.strip()}.{updates_text}"
-    )
-
-
-@bot.command(name='credits')
-async def credits(ctx: commands.Context, member: Optional[discord.Member] = None):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-
-    target = member or ctx.author
-    total = db.get_user_credits(str(ctx.guild.id), str(target.id))
-    history = db.get_credit_history(str(ctx.guild.id), str(target.id), limit=10)
-
-    embed = discord.Embed(
-        title=f"Crédits de {target.display_name}",
-        color=0x5865F2,
-    )
-    embed.add_field(name="Solde actuel", value=str(total), inline=False)
-
-    if history:
-        lines = []
-        for entry in history:
-            delta = entry.get("delta")
-            try:
-                delta_value = int(delta)
-            except (TypeError, ValueError):
-                delta_value = 0
-            reason = entry.get("reason") or "Raison non renseignée"
-            actor = entry.get("actor_name") or entry.get("actor_id") or "Inconnu"
-            total_value = entry.get("total")
-            total_text = f" (total {total_value})" if total_value is not None else ""
-            timestamp = entry.get("timestamp")
-            date_text = "date inconnue"
-            if isinstance(timestamp, str):
-                try:
-                    cleaned = timestamp.replace("Z", "+00:00")
-                    date_text = datetime.datetime.fromisoformat(cleaned).strftime("%d/%m %H:%M")
-                except ValueError:
-                    date_text = timestamp
-            emoji = "➕" if delta_value >= 0 else "➖"
-            lines.append(f"{emoji} {delta_value:+d}{total_text} — {reason} (par {actor}) — {date_text}")
-        embed.add_field(name="Historique récent", value="\n".join(lines), inline=False)
-    else:
-        embed.add_field(name="Historique récent", value="Aucun mouvement enregistré.", inline=False)
-
-    await ctx.send(embed=embed)
-
-
-@bot.command(name='clb')
-async def credits_leaderboard(ctx: commands.Context):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
-        return
-
-    staff_role = ctx.guild.get_role(LEGACY_VOTESTAFF_ROLE_ID)
-    if staff_role is None:
-        await ctx.send("Le rôle staff est introuvable.")
-        return
-
-    staff_members = [member for member in staff_role.members if not member.bot]
-    if not staff_members:
-        await ctx.send("Aucun staff trouvé pour établir le classement.")
-        return
-
-    top_entries = db.get_top_credits(
-        str(ctx.guild.id),
-        [str(member.id) for member in staff_members],
-        limit=10,
-    )
-    if not top_entries:
-        await ctx.send("Aucun crédit enregistré pour les staff pour le moment.")
-        return
-
-    lines = []
-    for index, entry in enumerate(top_entries, start=1):
-        member = ctx.guild.get_member(int(entry.get("user_id") or 0))
-        name = member.display_name if member else f"ID {entry.get('user_id')}"
-        credits_value = entry.get("credits", 0)
-        lines.append(f"**{index}.** {name} — {credits_value} crédits")
-
-    embed = discord.Embed(
-        title="🏆 Classement des staff (crédits)",
-        description="\n".join(lines),
-        color=0x5865F2,
-    )
-    await ctx.send(embed=embed)
 
 
 def _pcsd_main_embed() -> discord.Embed:
