@@ -1,4 +1,3 @@
-# --- GARDE EXACTEMENT TES IMPORTS ---
 from __future__ import annotations
 
 import io
@@ -24,7 +23,7 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# FONT SEKUYA (FIX PROPRE)
+# FONT SEKUYA
 # ---------------------------------------------------------------------------
 _FONT_CACHE_DIR = Path(os.getenv("FONT_CACHE_DIR", "/tmp/bot_fonts"))
 _SEKUYA_PATH = _FONT_CACHE_DIR / "Sekuya.ttf"
@@ -41,7 +40,6 @@ def _ensure_font() -> Optional[Path]:
 
     try:
         css_url = "https://fonts.googleapis.com/css2?family=Sekuya&display=swap"
-
         req = urllib.request.Request(css_url, headers={"User-Agent": "Mozilla/5.0"})
         css = urllib.request.urlopen(req).read().decode()
 
@@ -74,11 +72,12 @@ def _load_font(size: int):
 
 
 # ---------------------------------------------------------------------------
-# COLORS (STYLE TON IMAGE)
+# COLORS (NEON STYLE)
 # ---------------------------------------------------------------------------
 BG_DARK = (10, 12, 25, 255)
 BG_CARD = (20, 25, 50, 255)
 NEON = (0, 200, 255, 255)
+NEON_SOFT = (0, 200, 255, 60)
 WHITE = (255, 255, 255, 255)
 GREY = (150, 160, 200, 255)
 BAR_BG = (40, 45, 70, 255)
@@ -103,7 +102,8 @@ async def _fetch_avatar(url: str, size: int):
         out.paste(avatar, (0, 0), mask)
 
         return out
-    except:
+    except Exception as e:
+        logger.warning(f"Avatar error: {e}")
         return None
 
 
@@ -115,8 +115,16 @@ def _xp_bar(draw, x, y, w, h, progress):
         draw.rounded_rectangle((x, y, x + filled, y + h), 8, fill=NEON)
 
 
+def _add_glow(card):
+    glow = Image.new("RGBA", card.size, (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.ellipse((-80, -80, 300, 200), fill=NEON_SOFT)
+    glow = glow.filter(ImageFilter.GaussianBlur(40))
+    return Image.alpha_composite(card, glow)
+
+
 # ---------------------------------------------------------------------------
-# LEVEL UP (SAME SIGNATURE)
+# LEVEL UP
 # ---------------------------------------------------------------------------
 
 async def generate_levelup_card(
@@ -134,19 +142,10 @@ async def generate_levelup_card(
 
     W, H = 620, 180
     card = Image.new("RGBA", (W, H), BG_DARK)
+    card = _add_glow(card)
 
     draw = ImageDraw.Draw(card)
 
-    # Glow effet
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.ellipse((-50, -50, 250, 150), fill=(0, 200, 255, 60))
-    glow = glow.filter(ImageFilter.GaussianBlur(30))
-    card = Image.alpha_composite(card, glow)
-
-    draw = ImageDraw.Draw(card)
-
-    # Card
     draw.rounded_rectangle((0, 0, W, H), 20, fill=BG_CARD)
 
     font_title = _load_font(36)
@@ -160,7 +159,6 @@ async def generate_levelup_card(
     draw.text((TEXT_X, 100), f"{old_level} → {new_level}", fill=GREY, font=font_small)
 
     progress = xp_progress / xp_required if xp_required else 0
-
     _xp_bar(draw, TEXT_X, 130, 350, 12, progress)
 
     draw.text((TEXT_X, 145), f"{xp_progress}/{xp_required} XP", fill=GREY, font=_load_font(12))
@@ -177,7 +175,7 @@ async def generate_levelup_card(
 
 
 # ---------------------------------------------------------------------------
-# LEADERBOARD (COMPATIBLE)
+# LEADERBOARD AVEC AVATARS 🔥
 # ---------------------------------------------------------------------------
 
 async def generate_topxp_card(
@@ -190,10 +188,12 @@ async def generate_topxp_card(
         return None
 
     ROW = 60
-    H = 100 + ROW * len(entries)
+    H = 100 + ROW * len(entries[:10])
     W = 620
 
     card = Image.new("RGBA", (W, H), BG_DARK)
+    card = _add_glow(card)
+
     draw = ImageDraw.Draw(card)
 
     draw.rounded_rectangle((0, 0, W, H), 20, fill=BG_CARD)
@@ -210,9 +210,30 @@ async def generate_topxp_card(
         xp = int(e.get("xp", 0))
         level = xp_to_level_fn(xp)
 
+        # Rank
         draw.text((20, y), f"#{i+1}", fill=WHITE, font=font_name)
-        draw.text((80, y), e.get("user_name", "User")[:18], fill=WHITE, font=font_name)
+
+        # Avatar
+        AV_SIZE = 40
+        av_x = 70
+        av_y = y - 5
+
+        avatar_url = e.get("avatar_url")
+
+        if avatar_url:
+            avatar = await _fetch_avatar(avatar_url, AV_SIZE)
+            if avatar:
+                card.paste(avatar, (av_x, av_y), avatar)
+        else:
+            draw.ellipse((av_x, av_y, av_x + AV_SIZE, av_y + AV_SIZE), fill=(60, 70, 120))
+
+        # Name
+        draw.text((av_x + 55, y), e.get("user_name", "User")[:18], fill=WHITE, font=font_name)
+
+        # Level
         draw.text((400, y), f"LV {level}", fill=NEON, font=_load_font(14))
+
+        # XP
         draw.text((470, y), f"{xp} XP", fill=GREY, font=_load_font(12))
 
     buf = io.BytesIO()
