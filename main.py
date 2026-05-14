@@ -31,6 +31,7 @@ from bot.custom_voice import CustomVoiceManager
 from bot.trust_levels import get_trust_level, is_trusted
 from bot.slow_mode import SlowModeManager
 from bot.level_roles import ensure_level_roles_exist, sync_level_roles
+from bot.card_generator import generate_levelup_card, generate_topxp_card
 
 logging.basicConfig(
     level=logging.INFO,
@@ -516,15 +517,28 @@ async def _grant_message_xp(message: discord.Message) -> None:
     if new_level > old_level:
         if isinstance(message.author, discord.Member):
             granted_role = await sync_level_roles(message.author, new_level, old_level)
+
+            # --- Card stylée ---
+            xp_progress, xp_required = _xp_in_current_level(new_xp)
+            card_buf = await generate_levelup_card(
+                member_name=message.author.display_name,
+                avatar_url=str(message.author.display_avatar.url),
+                old_level=old_level,
+                new_level=new_level,
+                xp_total=new_xp,
+                xp_progress=xp_progress,
+                xp_required=xp_required,
+            )
+
+            content = f"{message.author.mention} Level up ! 🎉 Tu es maintenant **niveau {new_level}**"
             if granted_role:
-                await message.channel.send(
-                    f"{message.author.mention} Level up! 🎉 Tu es maintenant **niveau {new_level}** "
-                    f"et tu as reçu le rôle {granted_role.mention} !"
-                )
+                content += f" — rôle {granted_role.mention} obtenu !"
+
+            if card_buf:
+                file = discord.File(card_buf, filename="levelup.png")
+                await message.channel.send(content=content, file=file)
             else:
-                await message.channel.send(
-                    f"{message.author.mention} Level up! 🎉 Tu es maintenant niveau {new_level}."
-                )
+                await message.channel.send(content)
         else:
             await message.channel.send(
                 f"{message.author.mention} Level up! 🎉 Tu es maintenant niveau {new_level}."
@@ -961,21 +975,40 @@ async def topxp_command(ctx: commands.Context):
         await ctx.send('Aucune XP enregistrée pour le moment.')
         return
 
-    lines = []
-    for index, entry in enumerate(top_entries, start=1):
+    # Enrichir les entrées avec les URLs d'avatar
+    enriched = []
+    for entry in top_entries:
         user_id = entry.get('user_id')
         member = ctx.guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
-        name = member.display_name if member else (entry.get('user_name') or f'ID {user_id}')
-        xp_value = int(entry.get('xp', 0) or 0)
-        level = _xp_to_level(xp_value)
-        lines.append(f'**{index}.** {name} — Niveau {level} ({xp_value} XP)')
+        enriched.append({
+            **entry,
+            "user_name": member.display_name if member else (entry.get('user_name') or f'ID {user_id}'),
+            "avatar_url": str(member.display_avatar.url) if member else None,
+        })
 
-    embed = discord.Embed(
-        title='🏆 Top XP du serveur',
-        description='\n'.join(lines),
-        color=0x5865F2,
+    # Générer la card image
+    card_buf = await generate_topxp_card(
+        guild_name=ctx.guild.name,
+        entries=enriched,
+        xp_to_level_fn=_xp_to_level,
     )
-    await ctx.send(embed=embed)
+
+    if card_buf:
+        file = discord.File(card_buf, filename="topxp.png")
+        await ctx.send(file=file)
+    else:
+        # Fallback texte si Pillow absent
+        lines = []
+        for index, entry in enumerate(enriched, start=1):
+            xp_value = int(entry.get('xp', 0) or 0)
+            level = _xp_to_level(xp_value)
+            lines.append(f'**{index}.** {entry["user_name"]} — Niveau {level} ({xp_value} XP)')
+        embed = discord.Embed(
+            title='🏆 Top XP du serveur',
+            description='\n'.join(lines),
+            color=0x5865F2,
+        )
+        await ctx.send(embed=embed)
 
 
 @bot.command(name='guidetest')
