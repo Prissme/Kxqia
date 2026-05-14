@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import random
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -12,7 +13,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Pillow
+# PIL
 # ---------------------------------------------------------------------------
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -61,18 +62,16 @@ def _ensure_font() -> Optional[Path]:
 
 def _load_font(size: int):
     path = _ensure_font()
-
     if path:
         try:
             return ImageFont.truetype(str(path), size)
         except:
             pass
-
     return ImageFont.load_default()
 
 
 # ---------------------------------------------------------------------------
-# COLORS (NEON STYLE)
+# COLORS
 # ---------------------------------------------------------------------------
 BG_DARK = (10, 12, 25, 255)
 BG_CARD = (20, 25, 50, 255)
@@ -84,9 +83,29 @@ BAR_BG = (40, 45, 70, 255)
 
 
 # ---------------------------------------------------------------------------
-# HELPERS
+# STARFIELD ANIMATION 🌌
 # ---------------------------------------------------------------------------
+def _generate_stars(seed=0, count=60, w=620, h=180):
+    random.seed(seed)
+    return [
+        [random.randint(0, w), random.randint(0, h), random.randint(1, 3)]
+        for _ in range(count)
+    ]
 
+
+def _draw_starfield(draw, stars, frame_i, speed=1):
+    for x, y, r in stars:
+        ny = (y + frame_i * speed) % 180
+        alpha = 120 + (r * 40)
+        draw.ellipse(
+            (x, ny, x + r, ny + r),
+            fill=(255, 255, 255, alpha),
+        )
+
+
+# ---------------------------------------------------------------------------
+# AVATAR
+# ---------------------------------------------------------------------------
 async def _fetch_avatar(url: str, size: int):
     try:
         async with aiohttp.ClientSession() as session:
@@ -107,26 +126,113 @@ async def _fetch_avatar(url: str, size: int):
         return None
 
 
+# ---------------------------------------------------------------------------
+# XP BAR
+# ---------------------------------------------------------------------------
 def _xp_bar(draw, x, y, w, h, progress):
     draw.rounded_rectangle((x, y, x + w, y + h), 8, fill=BAR_BG)
-
     filled = int(w * max(0, min(1, progress)))
     if filled > 0:
         draw.rounded_rectangle((x, y, x + filled, y + h), 8, fill=NEON)
 
 
-def _add_glow(card):
-    glow = Image.new("RGBA", card.size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.ellipse((-80, -80, 300, 200), fill=NEON_SOFT)
-    glow = glow.filter(ImageFilter.GaussianBlur(40))
-    return Image.alpha_composite(card, glow)
+# ---------------------------------------------------------------------------
+# LEVEL UP FRAMES 🎬
+# ---------------------------------------------------------------------------
+def _build_levelup_frames(member_name, avatar, old_level, new_level, xp_progress, xp_required, W=620, H=180):
+    frames = []
+    stars = _generate_stars()
+
+    for i in range(14):
+        card = Image.new("RGBA", (W, H), BG_DARK)
+        draw = ImageDraw.Draw(card)
+
+        # star background
+        _draw_starfield(draw, stars, i)
+
+        # glow pulse
+        glow = Image.new("RGBA", card.size, (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+
+        pulse = (i / 14)
+        gd.ellipse((-80, -80, 300, 200), fill=(0, 200, 255, int(40 + 60 * pulse)))
+        glow = glow.filter(ImageFilter.GaussianBlur(40))
+        card = Image.alpha_composite(card, glow)
+
+        draw = ImageDraw.Draw(card)
+        draw.rounded_rectangle((0, 0, W, H), 20, fill=BG_CARD)
+
+        font_title = _load_font(36)
+        font_sub = _load_font(20)
+        font_small = _load_font(14)
+
+        TEXT_X = 170
+
+        draw.text((TEXT_X, 25), "LEVEL UP", fill=NEON, font=font_title)
+        draw.text((TEXT_X, 70), member_name[:20], fill=WHITE, font=font_sub)
+        draw.text((TEXT_X, 100), f"{old_level} → {new_level}", fill=GREY, font=font_small)
+
+        progress = (xp_progress / xp_required) * pulse if xp_required else 0
+        _xp_bar(draw, TEXT_X, 130, 350, 12, progress)
+
+        if avatar:
+            card.paste(avatar, (30, 35), avatar)
+
+        frames.append(card)
+
+    return frames
 
 
 # ---------------------------------------------------------------------------
-# LEVEL UP
+# TOP XP FRAMES 🔥
 # ---------------------------------------------------------------------------
+def _build_topxp_frames(entries, xp_to_level_fn, guild_name, W=620, H=500):
+    frames = []
+    stars = _generate_stars(count=90, h=500)
 
+    for i in range(10):
+        card = Image.new("RGBA", (W, H), BG_DARK)
+        draw = ImageDraw.Draw(card)
+
+        _draw_starfield(draw, stars, i, speed=1)
+
+        draw.rounded_rectangle((0, 0, W, H), 20, fill=BG_CARD)
+
+        font_title = _load_font(28)
+        font_name = _load_font(16)
+
+        draw.text((20, 20), "TOP XP", fill=NEON, font=font_title)
+        draw.text((20, 55), guild_name[:30], fill=GREY, font=_load_font(12))
+
+        for idx, e in enumerate(entries[:10]):
+            y = 100 + idx * 35
+
+            xp = int(e.get("xp", 0))
+            level = xp_to_level_fn(xp)
+
+            draw.text((20, y), f"#{idx+1}", fill=WHITE, font=font_name)
+
+            AV = 30
+            ax, ay = 60, y - 5
+
+            avatar_url = e.get("avatar_url")
+            if avatar_url:
+                avatar = None  # lazy (optional optimization)
+            else:
+                avatar = None
+
+            draw.text((100, y), e.get("user_name", "User")[:18], fill=WHITE, font=font_name)
+            draw.text((400, y), f"LV {level}", fill=NEON, font=_load_font(14))
+            draw.text((470, y), f"{xp} XP", fill=GREY, font=_load_font(12))
+
+        frames.append(card)
+
+    return frames
+
+
+# ---------------------------------------------------------------------------
+# LEVEL UP CARD 🎬
+# ---------------------------------------------------------------------------
 async def generate_levelup_card(
     member_name: str,
     avatar_url: str,
@@ -140,44 +246,35 @@ async def generate_levelup_card(
     if not _PIL_AVAILABLE:
         return None
 
-    W, H = 620, 180
-    card = Image.new("RGBA", (W, H), BG_DARK)
-    card = _add_glow(card)
-
-    draw = ImageDraw.Draw(card)
-
-    draw.rounded_rectangle((0, 0, W, H), 20, fill=BG_CARD)
-
-    font_title = _load_font(36)
-    font_sub = _load_font(20)
-    font_small = _load_font(14)
-
-    TEXT_X = 170
-
-    draw.text((TEXT_X, 25), "LEVEL UP", fill=NEON, font=font_title)
-    draw.text((TEXT_X, 70), member_name[:20], fill=WHITE, font=font_sub)
-    draw.text((TEXT_X, 100), f"{old_level} → {new_level}", fill=GREY, font=font_small)
-
-    progress = xp_progress / xp_required if xp_required else 0
-    _xp_bar(draw, TEXT_X, 130, 350, 12, progress)
-
-    draw.text((TEXT_X, 145), f"{xp_progress}/{xp_required} XP", fill=GREY, font=_load_font(12))
-
     avatar = await _fetch_avatar(avatar_url, 110)
-    if avatar:
-        card.paste(avatar, (30, 35), avatar)
+
+    frames = _build_levelup_frames(
+        member_name,
+        avatar,
+        old_level,
+        new_level,
+        xp_progress,
+        xp_required,
+    )
 
     buf = io.BytesIO()
-    card.save(buf, format="PNG")
-    buf.seek(0)
+    frames[0].save(
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=70,
+        loop=0,
+        disposal=2,
+    )
 
+    buf.seek(0)
     return buf
 
 
 # ---------------------------------------------------------------------------
-# LEADERBOARD AVEC AVATARS 🔥
+# TOP XP CARD 🔥
 # ---------------------------------------------------------------------------
-
 async def generate_topxp_card(
     guild_name: str,
     entries: list[dict],
@@ -187,57 +284,18 @@ async def generate_topxp_card(
     if not _PIL_AVAILABLE:
         return None
 
-    ROW = 60
-    H = 100 + ROW * len(entries[:10])
-    W = 620
-
-    card = Image.new("RGBA", (W, H), BG_DARK)
-    card = _add_glow(card)
-
-    draw = ImageDraw.Draw(card)
-
-    draw.rounded_rectangle((0, 0, W, H), 20, fill=BG_CARD)
-
-    font_title = _load_font(26)
-    font_name = _load_font(16)
-
-    draw.text((20, 20), "TOP XP", fill=NEON, font=font_title)
-    draw.text((20, 55), guild_name[:30], fill=GREY, font=_load_font(12))
-
-    for i, e in enumerate(entries[:10]):
-        y = 100 + i * ROW
-
-        xp = int(e.get("xp", 0))
-        level = xp_to_level_fn(xp)
-
-        # Rank
-        draw.text((20, y), f"#{i+1}", fill=WHITE, font=font_name)
-
-        # Avatar
-        AV_SIZE = 40
-        av_x = 70
-        av_y = y - 5
-
-        avatar_url = e.get("avatar_url")
-
-        if avatar_url:
-            avatar = await _fetch_avatar(avatar_url, AV_SIZE)
-            if avatar:
-                card.paste(avatar, (av_x, av_y), avatar)
-        else:
-            draw.ellipse((av_x, av_y, av_x + AV_SIZE, av_y + AV_SIZE), fill=(60, 70, 120))
-
-        # Name
-        draw.text((av_x + 55, y), e.get("user_name", "User")[:18], fill=WHITE, font=font_name)
-
-        # Level
-        draw.text((400, y), f"LV {level}", fill=NEON, font=_load_font(14))
-
-        # XP
-        draw.text((470, y), f"{xp} XP", fill=GREY, font=_load_font(12))
+    frames = _build_topxp_frames(entries, xp_to_level_fn, guild_name)
 
     buf = io.BytesIO()
-    card.save(buf, format="PNG")
-    buf.seek(0)
+    frames[0].save(
+        buf,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=90,
+        loop=0,
+        disposal=2,
+    )
 
+    buf.seek(0)
     return buf
