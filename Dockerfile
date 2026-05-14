@@ -1,19 +1,41 @@
-# Use official Python image matching runtime
 FROM python:3.11-slim
 
-# Prevents Python from writing .pyc files and buffers stdout/stderr
+# --------------------------------------------------
+# Environnements Python (stabilité + logs propres)
+# --------------------------------------------------
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-# Create work directory
+# --------------------------------------------------
+# Workdir
+# --------------------------------------------------
 WORKDIR /app
 
-# Install dependencies first for better layer caching
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# --------------------------------------------------
+# Dépendances système minimales (Pillow safe)
+# --------------------------------------------------
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libjpeg-dev \
+    zlib1g-dev \
+    libpng-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy application files
+# --------------------------------------------------
+# Install Python deps (layer cache optimisé)
+# --------------------------------------------------
+COPY requirements.txt .
+
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+# --------------------------------------------------
+# Copy project
+# --------------------------------------------------
 COPY . .
 
-# Default command to run the Discord bot
+# --------------------------------------------------
+# Runtime command
+# --------------------------------------------------
 CMD ["python", "main.py"]
