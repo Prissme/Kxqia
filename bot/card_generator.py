@@ -293,12 +293,8 @@ async def generate_topxp_card(
     _rounded_rect(draw, (0, 0, W, H), 20, BG_CARD)
     draw.rounded_rectangle((0, 0, W - 1, H - 1), radius=20, outline=BORDER, width=2)
 
-    # Dégradé header
-    header_layer = Image.new("RGBA", (W, HEADER_H), (0, 0, 0, 0))
-    hd = ImageDraw.Draw(header_layer)
-    _rounded_rect(hd, (0, 0, W, HEADER_H + 20), 20, (*ACCENT[:3], 40))
-    card = Image.alpha_composite(card, header_layer)
-    draw = ImageDraw.Draw(card)
+    # Dégradé header — on dessine directement sur la card sans alpha_composite séparé
+    draw.rounded_rectangle((0, 0, W, HEADER_H + 20), radius=20, fill=(*ACCENT[:3], 40))
 
     font_title  = _load_font(28)
     font_sub    = _load_font(13)
@@ -314,13 +310,9 @@ async def generate_topxp_card(
     for i, entry in enumerate(entries[:MAX_ENTRIES]):
         y = HEADER_H + i * ROW_H
 
-        # Fond alterné subtil
+        # Fond alterné subtil — dessin direct sur la card (pas d'alpha_composite)
         if i % 2 == 0:
-            row_layer = Image.new("RGBA", (W, ROW_H), (0, 0, 0, 0))
-            rd = ImageDraw.Draw(row_layer)
-            rd.rectangle((0, 0, W, ROW_H), fill=(255, 255, 255, 6))
-            card = Image.alpha_composite(card, row_layer.transform(card.size, Image.EXTENT, (0, -y, W, ROW_H - y)))
-            draw = ImageDraw.Draw(card)
+            draw.rectangle((0, y, W, y + ROW_H), fill=(255, 255, 255, 6))
 
         # Séparateur
         draw.line([(PAD, y), (W - PAD, y)], fill=BORDER, width=1)
@@ -347,6 +339,7 @@ async def generate_topxp_card(
             phd.text((AV_SIZE // 2 - 6, AV_SIZE // 2 - 9), initial, fill=WHITE, font=_load_font(18))
             card.paste(ph, (av_x, av_y), ph)
 
+        # Rafraîchir draw après paste
         draw = ImageDraw.Draw(card)
 
         # Nom + XP
