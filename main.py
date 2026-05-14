@@ -30,6 +30,7 @@ from bot.anti_raid import AntiRaid
 from bot.custom_voice import CustomVoiceManager
 from bot.trust_levels import get_trust_level, is_trusted
 from bot.slow_mode import SlowModeManager
+from bot.level_roles import ensure_level_roles_exist, sync_level_roles
 
 logging.basicConfig(
     level=logging.INFO,
@@ -441,7 +442,6 @@ async def collect_message_stats(guild: discord.Guild, cutoff: datetime.datetime)
     return len(authors), counter
 
 
-
 def _xp_required_for_next_level(level: int) -> int:
     """XP requis pour passer du niveau `level` au niveau `level + 1`."""
     if level < 0:
@@ -514,7 +514,21 @@ async def _grant_message_xp(message: discord.Message) -> None:
 
     new_level = _xp_to_level(new_xp)
     if new_level > old_level:
-        await message.channel.send(f"{message.author.mention} Level up! 🎉 Tu es maintenant niveau {new_level}.")
+        if isinstance(message.author, discord.Member):
+            granted_role = await sync_level_roles(message.author, new_level, old_level)
+            if granted_role:
+                await message.channel.send(
+                    f"{message.author.mention} Level up! 🎉 Tu es maintenant **niveau {new_level}** "
+                    f"et tu as reçu le rôle {granted_role.mention} !"
+                )
+            else:
+                await message.channel.send(
+                    f"{message.author.mention} Level up! 🎉 Tu es maintenant niveau {new_level}."
+                )
+        else:
+            await message.channel.send(
+                f"{message.author.mention} Level up! 🎉 Tu es maintenant niveau {new_level}."
+            )
 
 
 # --- Discord events and commands
@@ -524,6 +538,15 @@ async def on_ready():
     _ensure_background_tasks()
     bot_status['ready'] = True
     logger.info('%s est connecté!', bot.user)
+
+    # Créer les rôles de niveau sur tous les serveurs
+    for guild in bot.guilds:
+        try:
+            await ensure_level_roles_exist(guild)
+            logger.info("Rôles de niveau vérifiés/créés pour %s", guild.name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Erreur lors de la création des rôles de niveau pour %s : %s", guild.name, exc)
+
     try:
         await bot.tree.sync()
     except Exception as exc:  # noqa: BLE001
@@ -548,6 +571,16 @@ async def on_ready():
         'latency': round(bot.latency * 1000, 2) if bot.latency else None,
         'guilds': len(bot.guilds),
     })
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    """Crée les rôles de niveau dès que le bot rejoint un nouveau serveur."""
+    try:
+        await ensure_level_roles_exist(guild)
+        logger.info("Rôles de niveau créés pour le nouveau serveur %s", guild.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erreur lors de la création des rôles de niveau pour %s : %s", guild.name, exc)
 
 
 @bot.event
@@ -720,7 +753,7 @@ async def blacklist_cmd(ctx: commands.Context):
         return
 
     blacklist_words = bot.blacklist_words.get(ctx.guild.id, set())
-    
+
     if not blacklist_words:
         embed = discord.Embed(
             title="📋 Liste des mots blacklistés",
@@ -729,11 +762,10 @@ async def blacklist_cmd(ctx: commands.Context):
         )
         await ctx.send(embed=embed)
         return
-    
-    # Créer une liste des mots blacklistés
+
     sorted_words = sorted(list(blacklist_words))
     words_text = '\n'.join([f"• `{word}`" for word in sorted_words])
-    
+
     embed = discord.Embed(
         title="📋 Liste des mots blacklistés",
         description=f"**Total:** {len(blacklist_words)} mot(s)\n\n{words_text}",
@@ -766,7 +798,7 @@ async def removeblacklist(interaction: discord.Interaction, mot: str):
         return
 
     guild_words = bot.blacklist_words.get(interaction.guild.id, set())
-    
+
     if cleaned not in guild_words:
         await interaction.response.send_message(f"Le mot `{cleaned}` n'est pas dans la blacklist.", ephemeral=True)
         return
@@ -2031,7 +2063,6 @@ def run_bot():
 
 def run_flask():
     port = int(os.getenv('PORT', 8000))
-    # allow_unsafe_werkzeug enables the built-in dev server in environments like Koyeb
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
 
 
