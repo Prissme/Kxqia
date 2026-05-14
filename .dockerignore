@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.git/
+.gitignore
+
+*.png
+*.gif
+*.jpg
+
+tmp/
+cache/
+fonts/
+.env
