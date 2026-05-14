@@ -1,15 +1,9 @@
-"""
-Modern Image Cards Generator (Neon / Gaming Style)
-- Level-up card
-- Leaderboard card
-Style inspiré : néon bleu / glow / propre (type ton image)
-"""
-
+# --- GARDE EXACTEMENT TES IMPORTS ---
 from __future__ import annotations
 
 import io
-import os
 import logging
+import os
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -26,31 +20,29 @@ try:
     _PIL_AVAILABLE = True
 except ImportError:
     _PIL_AVAILABLE = False
-    logger.warning("Pillow non installé")
+    logger.warning("Pillow non installé — cards désactivées.")
+
 
 # ---------------------------------------------------------------------------
-# FONT (SEKUYA CLEAN)
+# FONT SEKUYA (FIX PROPRE)
 # ---------------------------------------------------------------------------
-FONT_DIR = Path("/tmp/fonts")
-FONT_PATH = FONT_DIR / "Sekuya.ttf"
+_FONT_CACHE_DIR = Path(os.getenv("FONT_CACHE_DIR", "/tmp/bot_fonts"))
+_SEKUYA_PATH = _FONT_CACHE_DIR / "Sekuya.ttf"
 
 
-def ensure_font():
+def _ensure_font() -> Optional[Path]:
     if not _PIL_AVAILABLE:
         return None
 
-    FONT_DIR.mkdir(parents=True, exist_ok=True)
+    _FONT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    if FONT_PATH.exists():
-        return FONT_PATH
+    if _SEKUYA_PATH.exists():
+        return _SEKUYA_PATH
 
     try:
         css_url = "https://fonts.googleapis.com/css2?family=Sekuya&display=swap"
 
-        req = urllib.request.Request(css_url, headers={
-            "User-Agent": "Mozilla/5.0"
-        })
-
+        req = urllib.request.Request(css_url, headers={"User-Agent": "Mozilla/5.0"})
         css = urllib.request.urlopen(req).read().decode()
 
         import re
@@ -60,17 +52,17 @@ def ensure_font():
             return None
 
         font_url = match.group(1)
+        _SEKUYA_PATH.write_bytes(urllib.request.urlopen(font_url).read())
 
-        FONT_PATH.write_bytes(urllib.request.urlopen(font_url).read())
-        return FONT_PATH
+        return _SEKUYA_PATH
 
     except Exception as e:
         logger.warning(f"Font download failed: {e}")
         return None
 
 
-def load_font(size):
-    path = ensure_font()
+def _load_font(size: int):
+    path = _ensure_font()
 
     if path:
         try:
@@ -82,140 +74,149 @@ def load_font(size):
 
 
 # ---------------------------------------------------------------------------
-# COLORS (NEON STYLE)
+# COLORS (STYLE TON IMAGE)
 # ---------------------------------------------------------------------------
-BG = (8, 10, 20)
-CARD = (20, 25, 45)
-NEON = (0, 200, 255)
-NEON_SOFT = (0, 200, 255, 80)
-WHITE = (255, 255, 255)
-GREY = (140, 150, 180)
+BG_DARK = (10, 12, 25, 255)
+BG_CARD = (20, 25, 50, 255)
+NEON = (0, 200, 255, 255)
+WHITE = (255, 255, 255, 255)
+GREY = (150, 160, 200, 255)
+BAR_BG = (40, 45, 70, 255)
 
 
 # ---------------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------------
 
-async def fetch_avatar(url, size):
+async def _fetch_avatar(url: str, size: int):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
                 data = await resp.read()
 
-        img = Image.open(io.BytesIO(data)).convert("RGBA")
-        img = img.resize((size, size))
+        avatar = Image.open(io.BytesIO(data)).convert("RGBA").resize((size, size))
 
         mask = Image.new("L", (size, size), 0)
-        draw = ImageDraw.Draw(mask)
-        draw.ellipse((0, 0, size, size), fill=255)
+        ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
 
         out = Image.new("RGBA", (size, size))
-        out.paste(img, (0, 0), mask)
+        out.paste(avatar, (0, 0), mask)
 
         return out
     except:
         return None
 
 
-def neon_glow(base, color=(0, 200, 255), radius=25):
-    glow = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(glow)
-    d.ellipse((-50, -50, 300, 200), fill=(*color, 60))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius))
-    return Image.alpha_composite(base, glow)
+def _xp_bar(draw, x, y, w, h, progress):
+    draw.rounded_rectangle((x, y, x + w, y + h), 8, fill=BAR_BG)
+
+    filled = int(w * max(0, min(1, progress)))
+    if filled > 0:
+        draw.rounded_rectangle((x, y, x + filled, y + h), 8, fill=NEON)
 
 
 # ---------------------------------------------------------------------------
-# LEVEL UP CARD
+# LEVEL UP (SAME SIGNATURE)
 # ---------------------------------------------------------------------------
 
 async def generate_levelup_card(
-    username: str,
+    member_name: str,
     avatar_url: str,
     old_level: int,
     new_level: int,
-    xp: int,
-    xp_required: int
-):
+    xp_total: int,
+    xp_progress: int,
+    xp_required: int,
+) -> Optional[io.BytesIO]:
+
     if not _PIL_AVAILABLE:
         return None
 
-    W, H = 700, 220
+    W, H = 620, 180
+    card = Image.new("RGBA", (W, H), BG_DARK)
 
-    img = Image.new("RGBA", (W, H), BG)
-    img = neon_glow(img)
+    draw = ImageDraw.Draw(card)
 
-    draw = ImageDraw.Draw(img)
+    # Glow effet
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.ellipse((-50, -50, 250, 150), fill=(0, 200, 255, 60))
+    glow = glow.filter(ImageFilter.GaussianBlur(30))
+    card = Image.alpha_composite(card, glow)
+
+    draw = ImageDraw.Draw(card)
 
     # Card
-    draw.rounded_rectangle((0, 0, W, H), 25, fill=CARD)
+    draw.rounded_rectangle((0, 0, W, H), 20, fill=BG_CARD)
 
-    # Fonts
-    title_f = load_font(50)
-    name_f = load_font(28)
-    small_f = load_font(18)
+    font_title = _load_font(36)
+    font_sub = _load_font(20)
+    font_small = _load_font(14)
 
-    # TEXT
-    draw.text((200, 30), "LEVEL UP", font=title_f, fill=NEON)
+    TEXT_X = 170
 
-    draw.text((200, 95), username, font=name_f, fill=WHITE)
+    draw.text((TEXT_X, 25), "LEVEL UP", fill=NEON, font=font_title)
+    draw.text((TEXT_X, 70), member_name[:20], fill=WHITE, font=font_sub)
+    draw.text((TEXT_X, 100), f"{old_level} → {new_level}", fill=GREY, font=font_small)
 
-    draw.text((200, 130), f"{old_level} → {new_level}", font=small_f, fill=GREY)
+    progress = xp_progress / xp_required if xp_required else 0
 
-    # BAR
-    progress = xp / xp_required if xp_required else 0
-    bar_w = int(350 * progress)
+    _xp_bar(draw, TEXT_X, 130, 350, 12, progress)
 
-    draw.rectangle((200, 170, 550, 185), fill=(40, 45, 70))
-    draw.rectangle((200, 170, 200 + bar_w, 185), fill=NEON)
+    draw.text((TEXT_X, 145), f"{xp_progress}/{xp_required} XP", fill=GREY, font=_load_font(12))
 
-    # Avatar
-    avatar = await fetch_avatar(avatar_url, 120)
+    avatar = await _fetch_avatar(avatar_url, 110)
     if avatar:
-        img.paste(avatar, (50, 50), avatar)
+        card.paste(avatar, (30, 35), avatar)
 
-    # EXPORT
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    card.save(buf, format="PNG")
     buf.seek(0)
 
     return buf
 
 
 # ---------------------------------------------------------------------------
-# LEADERBOARD
+# LEADERBOARD (COMPATIBLE)
 # ---------------------------------------------------------------------------
 
-async def generate_leaderboard(entries):
+async def generate_topxp_card(
+    guild_name: str,
+    entries: list[dict],
+    xp_to_level_fn,
+) -> Optional[io.BytesIO]:
+
     if not _PIL_AVAILABLE:
         return None
 
-    W = 700
-    ROW = 70
+    ROW = 60
     H = 100 + ROW * len(entries)
+    W = 620
 
-    img = Image.new("RGBA", (W, H), BG)
-    img = neon_glow(img)
+    card = Image.new("RGBA", (W, H), BG_DARK)
+    draw = ImageDraw.Draw(card)
 
-    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((0, 0, W, H), 20, fill=BG_CARD)
 
-    draw.rounded_rectangle((0, 0, W, H), 25, fill=CARD)
+    font_title = _load_font(26)
+    font_name = _load_font(16)
 
-    title_f = load_font(40)
-    name_f = load_font(22)
-    small_f = load_font(16)
+    draw.text((20, 20), "TOP XP", fill=NEON, font=font_title)
+    draw.text((20, 55), guild_name[:30], fill=GREY, font=_load_font(12))
 
-    draw.text((30, 20), "TOP PLAYERS", font=title_f, fill=NEON)
-
-    for i, e in enumerate(entries):
+    for i, e in enumerate(entries[:10]):
         y = 100 + i * ROW
 
-        draw.text((30, y), f"#{i+1}", font=name_f, fill=WHITE)
-        draw.text((100, y), e["name"], font=name_f, fill=WHITE)
-        draw.text((500, y), f"{e['xp']} XP", font=small_f, fill=GREY)
+        xp = int(e.get("xp", 0))
+        level = xp_to_level_fn(xp)
+
+        draw.text((20, y), f"#{i+1}", fill=WHITE, font=font_name)
+        draw.text((80, y), e.get("user_name", "User")[:18], fill=WHITE, font=font_name)
+        draw.text((400, y), f"LV {level}", fill=NEON, font=_load_font(14))
+        draw.text((470, y), f"{xp} XP", fill=GREY, font=_load_font(12))
 
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    card.save(buf, format="PNG")
     buf.seek(0)
 
     return buf
