@@ -24,7 +24,7 @@ from database.models import Config
 from bot.anti_nuke import AntiNuke
 from bot.anti_raid import AntiRaid
 from bot.slow_mode import SlowModeManager
-from bot.level_roles import ensure_level_roles_exist, sync_level_roles
+from bot.level_roles import sync_level_roles
 from bot.card_generator import generate_levelup_card, generate_topxp_card, generate_xp_card
 
 logging.basicConfig(
@@ -62,6 +62,18 @@ ROLE_SELECT_VALUES = {
     "scrims": (ROLE_SCRIMS_ID, "Scrims"),
     "votes2profils": (ROLE_VOTES2PROFILS_ID, "Vote de Profils"),
 }
+
+# --- Rôles de niveau hardcodés (ID réels, plus de création automatique)
+LEVEL_ROLES: dict[int, int] = {
+    1:  1504936470849392731,
+    5:  1504564311345987704,
+    10: 1504564312092709005,
+    15: 1504564313480761456,
+    20: 1504564314693042278,
+    30: 1504564315687227402,
+    50: 1504564316827947069,
+}
+
 XP_PER_MESSAGE = 5
 XP_COOLDOWN_SECONDS = 30
 MAX_LEVEL = 99
@@ -141,7 +153,6 @@ def _get_roles_view() -> "RoleButtonsView":
     return _roles_view
 
 
-# --- Rôles à boutons (embed + view persistante)
 def uptime() -> str:
     delta = datetime.datetime.utcnow() - start_time
     days, remainder = divmod(delta.total_seconds(), 86400)
@@ -334,8 +345,6 @@ def _get_bot_member(guild: discord.Guild) -> Optional[discord.Member]:
     return guild.me or guild.get_member(bot.user.id)
 
 
-# --- Discord helpers
-
 def _iter_message_channels(guild: discord.Guild) -> Iterable[discord.abc.Messageable]:
     seen_ids = set()
     for channel in guild.text_channels:
@@ -418,6 +427,59 @@ def _build_progress_bar(progress: int, required: int, size: int = 12) -> str:
     return f"{'█' * filled}{'░' * (size - filled)} {int(ratio * 100)}%"
 
 
+def _get_level_role_for_level(level: int) -> Optional[int]:
+    """Retourne l'ID du rôle hardcodé correspondant au niveau actuel (le plus élevé atteint)."""
+    best_role_id = None
+    for required_level in sorted(LEVEL_ROLES.keys()):
+        if level >= required_level:
+            best_role_id = LEVEL_ROLES[required_level]
+    return best_role_id
+
+
+async def _sync_level_roles_hardcoded(member: discord.Member, new_level: int) -> Optional[discord.Role]:
+    """
+    Synchronise les rôles de niveau hardcodés pour un membre.
+    Attribue le rôle correspondant au niveau actuel, retire les autres rôles de niveau.
+    Retourne le rôle accordé (ou None).
+    """
+    guild = member.guild
+    bot_member = guild.me or guild.get_member(bot.user.id)
+    if bot_member is None:
+        return None
+
+    target_role_id = _get_level_role_for_level(new_level)
+    granted_role = None
+
+    roles_to_remove = []
+    for role_id in LEVEL_ROLES.values():
+        role = guild.get_role(role_id)
+        if role is None:
+            continue
+        if role in member.roles and role_id != target_role_id:
+            roles_to_remove.append(role)
+
+    if roles_to_remove:
+        try:
+            await member.remove_roles(*roles_to_remove, reason="Mise à jour rôle de niveau")
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.warning("Impossible de retirer les anciens rôles de niveau pour %s : %s", member, e)
+
+    if target_role_id is not None:
+        target_role = guild.get_role(target_role_id)
+        if target_role and target_role not in member.roles:
+            if not target_role.managed and target_role < bot_member.top_role:
+                try:
+                    await member.add_roles(target_role, reason=f"Niveau {new_level} atteint")
+                    granted_role = target_role
+                    logger.info("Rôle de niveau %s attribué à %s (niveau %d).", target_role.name, member, new_level)
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    logger.warning("Impossible d'attribuer le rôle de niveau à %s : %s", member, e)
+        elif target_role and target_role in member.roles:
+            granted_role = target_role  # déjà possédé, pas de log "nouveau"
+
+    return granted_role
+
+
 async def _grant_message_xp(message: discord.Message) -> None:
     if message.guild is None:
         return
@@ -443,9 +505,8 @@ async def _grant_message_xp(message: discord.Message) -> None:
     new_level = _xp_to_level(new_xp)
     if new_level > old_level:
         if isinstance(message.author, discord.Member):
-            granted_role = await sync_level_roles(message.author, new_level, old_level)
+            granted_role = await _sync_level_roles_hardcoded(message.author, new_level)
 
-            # --- Card stylée ---
             xp_progress, xp_required = _xp_in_current_level(new_xp)
             card_buf = await generate_levelup_card(
                 member_name=message.author.display_name,
@@ -489,37 +550,37 @@ async def on_ready():
     _ensure_background_tasks()
     logger.info('%s est connecté!', bot.user)
 
+    # Plus de création automatique de rôles — ils sont hardcodés.
+    # On vérifie juste que les rôles existent dans le(s) serveur(s).
     for guild in bot.guilds:
-        try:
-            await ensure_level_roles_exist(guild)
-            logger.info("Rôles de niveau vérifiés/créés pour %s", guild.name)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Erreur lors de la création des rôles de niveau pour %s : %s", guild.name, exc)
+        missing = []
+        for level, role_id in LEVEL_ROLES.items():
+            if guild.get_role(role_id) is None:
+                missing.append(f"Niveau {level} (ID {role_id})")
+        if missing:
+            logger.warning(
+                "Rôles de niveau introuvables dans '%s' : %s",
+                guild.name,
+                ", ".join(missing),
+            )
+        else:
+            logger.info("Tous les rôles de niveau sont présents dans '%s'.", guild.name)
 
     try:
-        await bot.tree.sync()
-    except Exception as exc:  # noqa: BLE001
+        synced = await bot.tree.sync()
+        logger.info("Slash commands synchronisées : %d commandes.", len(synced))
+    except Exception as exc:
         logger.exception('Sync des commandes échouée: %s', exc)
-    
+
     if not _role_view_added:
         bot.add_view(_get_roles_view())
         _role_view_added = True
         logger.info("View persistante des rôles enregistrée.")
-        
+
     try:
         await _send_roles_message(source="on_ready")
     except discord.HTTPException:
         logger.exception("Erreur lors de l'envoi automatique de l'embed des rôles.")
-
-
-@bot.event
-async def on_guild_join(guild: discord.Guild):
-    """Crée les rôles de niveau dès que le bot rejoint un nouveau serveur."""
-    try:
-        await ensure_level_roles_exist(guild)
-        logger.info("Rôles de niveau créés pour le nouveau serveur %s", guild.name)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Erreur lors de la création des rôles de niveau pour %s : %s", guild.name, exc)
 
 
 @bot.event
@@ -658,6 +719,14 @@ async def on_guild_channel_update(before, after):
     await anti_nuke.handle_channel_update(before, after)
 
 
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.CommandNotFound):
+        return
+    logger.error('Error: %s', error)
+
+
+# --- Préfixe commands
 @bot.command(name='ping')
 async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
@@ -666,25 +735,22 @@ async def ping(ctx: commands.Context):
 @bot.command(name='syncroles')
 @commands.has_permissions(manage_roles=True)
 async def sync_roles_cmd(ctx: commands.Context):
-    """Commande manuelle pour synchroniser les rôles XP de tous les membres."""
-    if ctx.guild is None: return
-    
-    status_msg = await ctx.send("🔄 Synchronisation globale des rôles de niveau en cours... Cela peut prendre un moment.")
-    
+    """Synchronise les rôles de niveau hardcodés pour tous les membres."""
+    if ctx.guild is None:
+        return
+
+    status_msg = await ctx.send("🔄 Synchronisation globale des rôles de niveau en cours...")
+
     count = 0
-    # On itère sur tous les membres (nécessite l'intent members)
     for member in ctx.guild.members:
-        if member.bot: continue
-        
+        if member.bot:
+            continue
         entry = db.get_user_xp(str(ctx.guild.id), str(member.id))
         xp_value = int(entry.get('xp', 0) or 0)
         current_level = _xp_to_level(xp_value)
-        
-        if current_level > 0:
-            # On force la synchro (old_level=0 pour s'assurer qu'il check tout l'historique)
-            await sync_level_roles(member, current_level, 0)
-            count += 1
-            
+        await _sync_level_roles_hardcoded(member, current_level)
+        count += 1
+
     await status_msg.edit(content=f"✅ Synchronisation terminée ! {count} membres mis à jour.")
 
 
@@ -708,7 +774,6 @@ async def blacklist_cmd(ctx: commands.Context):
 
     sorted_words = sorted(list(blacklist_words))
     words_text = '\n'.join([f"• `{word}`" for word in sorted_words])
-
     embed = discord.Embed(
         title="📋 Liste des mots blacklistés",
         description=f"**Total:** {len(blacklist_words)} mot(s)\n\n{words_text}",
@@ -717,47 +782,48 @@ async def blacklist_cmd(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
-@bot.tree.command(name='removeblacklist', description='Retire un mot de la blacklist')
-@app_commands.describe(mot='Mot à retirer de la blacklist')
-async def removeblacklist(interaction: discord.Interaction, mot: str):
-    if interaction.guild is None:
-        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
+@bot.command(name='xp')
+async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Member] = None):
+    """Alias préfixe pour la commande XP."""
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
         return
 
-    if not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message('Impossible de vérifier tes permissions.', ephemeral=True)
-        return
+    target = member or ctx.author
+    entry = db.get_user_xp(str(ctx.guild.id), str(target.id))
+    xp_value = int(entry.get('xp', 0) or 0)
+    level = _xp_to_level(xp_value)
+    progress, required = _xp_in_current_level(xp_value)
 
-    if not _is_privileged_member(interaction.user):
-        await interaction.response.send_message(
-            'Tu dois être administrateur ou avoir la permission Gérer le serveur.',
-            ephemeral=True,
-        )
-        return
-
-    cleaned = mot.strip().lower()
-    if not cleaned:
-        await interaction.response.send_message('Le mot ne peut pas être vide.', ephemeral=True)
-        return
-
-    guild_words = bot.blacklist_words.get(interaction.guild.id, set())
-
-    if cleaned not in guild_words:
-        await interaction.response.send_message(f"Le mot `{cleaned}` n'est pas dans la blacklist.", ephemeral=True)
-        return
-
-    guild_words.remove(cleaned)
-    db.log_event(
-        'moderation',
-        'info',
-        'Mot retiré de la blacklist',
-        user_id=str(interaction.user.id),
-        user_name=str(interaction.user),
-        channel_id=str(interaction.channel.id) if interaction.channel else None,
-        guild_id=str(interaction.guild.id),
-        metadata={'mot': cleaned},
+    card_buf = await generate_xp_card(
+        member_name=target.display_name,
+        avatar_url=str(target.display_avatar.url),
+        level=level,
+        xp_total=xp_value,
+        xp_progress=progress,
+        xp_required=required,
     )
-    await interaction.response.send_message(f"✅ `{cleaned}` a été retiré de la blacklist.", ephemeral=True)
+
+    embed = discord.Embed(title=f'XP de {target.display_name}', color=0x5865F2)
+
+    if card_buf:
+        file = discord.File(card_buf, filename="xp_card.png")
+        embed.set_image(url="attachment://xp_card.png")
+        await ctx.send(embed=embed, file=file)
+    else:
+        if level >= MAX_LEVEL:
+            progress_text = 'Niveau max atteint (99)'
+            progress_bar = _build_progress_bar(1, 1)
+        else:
+            progress_text = f'{progress}/{required} XP vers le niveau {level + 1}'
+            progress_bar = _build_progress_bar(progress, required)
+
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name='Niveau', value=str(level), inline=True)
+        embed.add_field(name='XP total', value=f'{xp_value}/{MAX_XP}', inline=True)
+        embed.add_field(name='Progression', value=progress_text, inline=False)
+        embed.add_field(name='Barre de niveau', value=progress_bar, inline=False)
+        await ctx.send(embed=embed)
 
 
 @bot.command(name='securitycheck')
@@ -790,19 +856,85 @@ async def security_check(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
-@bot.command(name='xp')
-async def xp_command(ctx: commands.Context, member: Optional[discord.Member] = None):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+# --- Slash commands
+
+@bot.tree.command(name='help', description='Liste des commandes disponibles pour les utilisateurs')
+async def help_user(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📖 Guide de l'utilisateur",
+        description="Voici les commandes que vous pouvez utiliser sur le serveur :",
+        color=0x5865F2
+    )
+    embed.add_field(
+        name="✨ Expérience",
+        value="`/xp [membre]` — Voir son niveau et son XP\n`/topxp` — Voir le classement du serveur",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚙️ Utilitaires",
+        value="`!ping` — Vérifier la latence du bot\n`!blacklist` — Voir les mots interdits sur le serveur",
+        inline=False,
+    )
+    embed.set_footer(text=f"Uptime : {uptime()}")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name='helpadmin', description='Liste des commandes réservées à l\'administration')
+@app_commands.checks.has_permissions(administrator=True)
+async def help_admin(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🛡️ Panneau d'Administration",
+        description="Commandes de gestion et de modération :",
+        color=0xFF0000
+    )
+    embed.add_field(
+        name="🔨 Modération",
+        value=(
+            "`/purge [n]` — Nettoyer les messages et verrouiller le salon\n"
+            "`/unpurge` — Rouvrir un salon verrouillé\n"
+            "`/trap [mot]` — Poser un mot piège (timeout 10 min)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🚫 Blacklist",
+        value=(
+            "`/addblacklist [mot]` — Bloquer un mot automatiquement\n"
+            "`/removeblacklist [mot]` — Débloquer un mot"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📊 Système XP",
+        value=(
+            "`!syncroles` — Synchronise les rôles de niveau de tous les membres\n"
+            "`/setup_roles` — Relancer l'embed de sélection des rôles"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🛡️ Sécurité",
+        value="`!securitycheck` — Vérifier la config Anti-Nuke / Anti-Raid",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name='xp', description='Affiche votre niveau et votre XP (ou celui d\'un autre membre)')
+@app_commands.describe(membre='Membre dont vous voulez voir le profil XP')
+async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Member] = None):
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée sur un serveur.', ephemeral=True)
         return
 
-    target = member or ctx.author
-    entry = db.get_user_xp(str(ctx.guild.id), str(target.id))
+    await interaction.response.defer()
+
+    target = membre or interaction.user
+    entry = db.get_user_xp(str(interaction.guild.id), str(target.id))
     xp_value = int(entry.get('xp', 0) or 0)
     level = _xp_to_level(xp_value)
     progress, required = _xp_in_current_level(xp_value)
 
-    # Génération de l'image de la carte d'XP avec Pillow
     card_buf = await generate_xp_card(
         member_name=target.display_name,
         avatar_url=str(target.display_avatar.url),
@@ -812,17 +944,13 @@ async def xp_command(ctx: commands.Context, member: Optional[discord.Member] = N
         xp_required=required,
     )
 
-    embed = discord.Embed(
-        title=f'XP de {target.display_name}',
-        color=0x5865F2,
-    )
-    
+    embed = discord.Embed(title=f'XP de {target.display_name}', color=0x5865F2)
+
     if card_buf:
         file = discord.File(card_buf, filename="xp_card.png")
         embed.set_image(url="attachment://xp_card.png")
-        await ctx.send(embed=embed, file=file)
+        await interaction.followup.send(embed=embed, file=file)
     else:
-        # Fallback si Pillow n'arrive pas à générer l'image
         if level >= MAX_LEVEL:
             progress_text = 'Niveau max atteint (99)'
             progress_bar = _build_progress_bar(1, 1)
@@ -835,24 +963,26 @@ async def xp_command(ctx: commands.Context, member: Optional[discord.Member] = N
         embed.add_field(name='XP total', value=f'{xp_value}/{MAX_XP}', inline=True)
         embed.add_field(name='Progression', value=progress_text, inline=False)
         embed.add_field(name='Barre de niveau', value=progress_bar, inline=False)
-        await ctx.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
-@bot.command(name='topxp')
-async def topxp_command(ctx: commands.Context):
-    if ctx.guild is None:
-        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+@bot.tree.command(name='topxp', description='Affiche le classement XP du serveur')
+async def topxp_slash(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée sur un serveur.', ephemeral=True)
         return
 
-    top_entries = db.get_top_xp(str(ctx.guild.id), limit=10)
+    await interaction.response.defer()
+
+    top_entries = db.get_top_xp(str(interaction.guild.id), limit=10)
     if not top_entries:
-        await ctx.send('Aucune XP enregistrée pour le moment.')
+        await interaction.followup.send('Aucune XP enregistrée pour le moment.')
         return
 
     enriched = []
     for entry in top_entries:
         user_id = entry.get('user_id')
-        member = ctx.guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
+        member = interaction.guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
         enriched.append({
             **entry,
             "user_name": member.display_name if member else (entry.get('user_name') or f'ID {user_id}'),
@@ -860,14 +990,14 @@ async def topxp_command(ctx: commands.Context):
         })
 
     card_buf = await generate_topxp_card(
-        guild_name=ctx.guild.name,
+        guild_name=interaction.guild.name,
         entries=enriched,
         xp_to_level_fn=_xp_to_level,
     )
 
     if card_buf:
         file = discord.File(card_buf, filename="topxp.png")
-        await ctx.send(file=file)
+        await interaction.followup.send(file=file)
     else:
         lines = []
         for index, entry in enumerate(enriched, start=1):
@@ -879,35 +1009,7 @@ async def topxp_command(ctx: commands.Context):
             description='\n'.join(lines),
             color=0x5865F2,
         )
-        await ctx.send(embed=embed)
-
-
-@bot.tree.command(name='help', description='Liste des commandes disponibles pour les utilisateurs')
-async def help_user(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="📖 Guide de l'utilisateur",
-        description="Voici les commandes que vous pouvez utiliser sur le serveur :",
-        color=0x5865F2
-    )
-    embed.add_field(name="✨ Expérience", value="`/xp [membre]` : Voir son niveau.\n`/topxp` : Voir le classement.", inline=False)
-    embed.add_field(name="⚙️ Utilitaires", value="`!ping` : Vérifier la latence.\n`!blacklist` : Voir les mots interdits.", inline=False)
-    embed.set_footer(text=f"Version du bot active | Uptime : {uptime()}")
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name='helpadmin', description='Liste des commandes réservées à l\'administration')
-@app_commands.checks.has_permissions(administrator=True)
-async def help_admin(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="🛡️ Panneau d'Administration",
-        description="Commandes de gestion et de modération :",
-        color=0xFF0000
-    )
-    embed.add_field(name="🔨 Modération", value="`/purge [n]` : Nettoyer et lock le salon.\n`/unpurge` : Unlock le salon.\n`/trap [mot]` : Poser un piège.", inline=False)
-    embed.add_field(name="🚫 Blacklist", value="`/addblacklist [mot]` : Bloquer un mot.\n`/removeblacklist [mot]` : Débloquer un mot.", inline=False)
-    embed.add_field(name="📊 Système XP", value="`!syncroles` : Synchronise les rôles de tout le monde.\n`/setup_roles` : Relancer l'embed des rôles.", inline=False)
-    embed.add_field(name="🛡️ Sécurité", value="`!securitycheck` : Vérifier l'Anti-Nuke / Anti-Raid.", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name='setup_roles', description='Renvoie l\'embed des rôles dans le salon configuré')
@@ -926,13 +1028,6 @@ async def setup_roles(interaction: discord.Interaction):
     except discord.HTTPException:
         logger.exception("Erreur lors de l'envoi manuel de l'embed des rôles.")
         await interaction.followup.send("Impossible d'envoyer l'embed pour le moment.", ephemeral=True)
-
-
-@bot.event
-async def on_command_error(ctx: commands.Context, error: commands.CommandError):
-    if isinstance(error, commands.CommandNotFound):
-        return
-    logger.error('Error: %s', error)
 
 
 @bot.tree.command(name='purge', description='Nettoie les messages et verrouille le salon pour les membres')
@@ -1048,7 +1143,7 @@ async def trap(interaction: discord.Interaction, mot: str):
         metadata={'mot': mot},
     )
     await interaction.response.send_message(
-        f"🪤 La prochaine personne qui dit '{mot}' prend 10 minutes de timeout."
+        f"🪤 La prochaine personne qui dit `{mot}` prend 10 minutes de timeout."
     )
 
 
@@ -1086,6 +1181,49 @@ async def addblacklist(interaction: discord.Interaction, mot: str):
         metadata={'mot': cleaned},
     )
     await interaction.response.send_message(f"✅ `{cleaned}` a été ajouté à la blacklist.")
+
+
+@bot.tree.command(name='removeblacklist', description='Retire un mot de la blacklist')
+@app_commands.describe(mot='Mot à retirer de la blacklist')
+async def removeblacklist(interaction: discord.Interaction, mot: str):
+    if interaction.guild is None:
+        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
+        return
+
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message('Impossible de vérifier tes permissions.', ephemeral=True)
+        return
+
+    if not _is_privileged_member(interaction.user):
+        await interaction.response.send_message(
+            'Tu dois être administrateur ou avoir la permission Gérer le serveur.',
+            ephemeral=True,
+        )
+        return
+
+    cleaned = mot.strip().lower()
+    if not cleaned:
+        await interaction.response.send_message('Le mot ne peut pas être vide.', ephemeral=True)
+        return
+
+    guild_words = bot.blacklist_words.get(interaction.guild.id, set())
+
+    if cleaned not in guild_words:
+        await interaction.response.send_message(f"Le mot `{cleaned}` n'est pas dans la blacklist.", ephemeral=True)
+        return
+
+    guild_words.remove(cleaned)
+    db.log_event(
+        'moderation',
+        'info',
+        'Mot retiré de la blacklist',
+        user_id=str(interaction.user.id),
+        user_name=str(interaction.user),
+        channel_id=str(interaction.channel.id) if interaction.channel else None,
+        guild_id=str(interaction.guild.id),
+        metadata={'mot': cleaned},
+    )
+    await interaction.response.send_message(f"✅ `{cleaned}` a été retiré de la blacklist.", ephemeral=True)
 
 
 def run_bot():
