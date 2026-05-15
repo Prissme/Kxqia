@@ -56,8 +56,10 @@ MAX_FRAMES_TOP  = 20   # classement 620×550
 # Utilitaires – polices
 # ---------------------------------------------------------------------------
 
-_NOTO_SANS_URL  = "https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans-Regular.ttf"
-_NOTO_EMOJI_URL = "https://github.com/googlefonts/noto-emoji/raw/main/fonts/NotoEmoji-Regular.ttf"
+# NotoSans — dépôt openmaptiles (miroir stable, pas soumis aux restructurations Google Fonts)
+_NOTO_SANS_URL  = "https://github.com/openmaptiles/fonts/raw/master/noto-sans/NotoSans-Regular.ttf"
+# NotoEmoji — dépôt officiel notofonts (release mensuelle stable)
+_NOTO_EMOJI_URL = "https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2025.12.01/fonts/NotoSansSymbols/hinted/ttf/NotoSansSymbols-Regular.ttf"
 
 
 def _download_file(url: str, dest: Path) -> bool:
@@ -87,10 +89,21 @@ def _ensure_fonts() -> None:
             logger.warning("Police Sekuya indisponible : %s", exc)
 
     if not _NOTO_PATH.exists():
-        _download_file(_NOTO_SANS_URL, _NOTO_PATH)
+        for _url in [
+            _NOTO_SANS_URL,
+            "https://github.com/ryanoasis/nerd-fonts/raw/master/src/unpatched-fonts/Noto/Sans/NotoSans-Regular.ttf",
+            "https://github.com/prezly/noto-sans/raw/master/fonts/NotoSans-Regular.ttf",
+        ]:
+            if _download_file(_url, _NOTO_PATH):
+                break
 
     if not _EMOJI_PATH.exists():
-        _download_file(_NOTO_EMOJI_URL, _EMOJI_PATH)
+        for _url in [
+            _NOTO_EMOJI_URL,
+            "https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2025.12.01/fonts/NotoSansSymbols2/hinted/ttf/NotoSansSymbols2-Regular.ttf",
+        ]:
+            if _download_file(_url, _EMOJI_PATH):
+                break
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
