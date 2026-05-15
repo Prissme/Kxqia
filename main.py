@@ -663,6 +663,31 @@ async def ping(ctx: commands.Context):
     await ctx.send(f'Pong! {round(bot.latency * 1000)}ms')
 
 
+@bot.command(name='syncroles')
+@commands.has_permissions(manage_roles=True)
+async def sync_roles_cmd(ctx: commands.Context):
+    """Commande manuelle pour synchroniser les rôles XP de tous les membres."""
+    if ctx.guild is None: return
+    
+    status_msg = await ctx.send("🔄 Synchronisation globale des rôles de niveau en cours... Cela peut prendre un moment.")
+    
+    count = 0
+    # On itère sur tous les membres (nécessite l'intent members)
+    for member in ctx.guild.members:
+        if member.bot: continue
+        
+        entry = db.get_user_xp(str(ctx.guild.id), str(member.id))
+        xp_value = int(entry.get('xp', 0) or 0)
+        current_level = _xp_to_level(xp_value)
+        
+        if current_level > 0:
+            # On force la synchro (old_level=0 pour s'assurer qu'il check tout l'historique)
+            await sync_level_roles(member, current_level, 0)
+            count += 1
+            
+    await status_msg.edit(content=f"✅ Synchronisation terminée ! {count} membres mis à jour.")
+
+
 @bot.command(name='blacklist')
 async def blacklist_cmd(ctx: commands.Context):
     """Affiche la liste des mots blacklistés du serveur."""
@@ -855,6 +880,34 @@ async def topxp_command(ctx: commands.Context):
             color=0x5865F2,
         )
         await ctx.send(embed=embed)
+
+
+@bot.tree.command(name='help', description='Liste des commandes disponibles pour les utilisateurs')
+async def help_user(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📖 Guide de l'utilisateur",
+        description="Voici les commandes que vous pouvez utiliser sur le serveur :",
+        color=0x5865F2
+    )
+    embed.add_field(name="✨ Expérience", value="`/xp [membre]` : Voir son niveau.\n`/topxp` : Voir le classement.", inline=False)
+    embed.add_field(name="⚙️ Utilitaires", value="`!ping` : Vérifier la latence.\n`!blacklist` : Voir les mots interdits.", inline=False)
+    embed.set_footer(text=f"Version du bot active | Uptime : {uptime()}")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name='helpadmin', description='Liste des commandes réservées à l\'administration')
+@app_commands.checks.has_permissions(administrator=True)
+async def help_admin(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🛡️ Panneau d'Administration",
+        description="Commandes de gestion et de modération :",
+        color=0xFF0000
+    )
+    embed.add_field(name="🔨 Modération", value="`/purge [n]` : Nettoyer et lock le salon.\n`/unpurge` : Unlock le salon.\n`/trap [mot]` : Poser un piège.", inline=False)
+    embed.add_field(name="🚫 Blacklist", value="`/addblacklist [mot]` : Bloquer un mot.\n`/removeblacklist [mot]` : Débloquer un mot.", inline=False)
+    embed.add_field(name="📊 Système XP", value="`!syncroles` : Synchronise les rôles de tout le monde.\n`/setup_roles` : Relancer l'embed des rôles.", inline=False)
+    embed.add_field(name="🛡️ Sécurité", value="`!securitycheck` : Vérifier l'Anti-Nuke / Anti-Raid.", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name='setup_roles', description='Renvoie l\'embed des rôles dans le salon configuré')
