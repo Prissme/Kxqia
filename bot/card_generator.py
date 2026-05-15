@@ -34,32 +34,38 @@ _EMOJI_PATH     = _FONT_CACHE_DIR / "NotoEmoji.ttf"
 # GIF de fond partagé (téléchargé une seule fois)
 _BG_GIF_URL  = "https://64.media.tumblr.com/50bc02e1080b949b2bd58c9353e4d779/b81f0327a444c7a5-c3/s540x810/6420baec988b32ab0c087abdc0d2bf9601ae512c.gif"
 _BG_GIF_PATH = _FONT_CACHE_DIR / "bg_animated.gif"
+
+# Cache global des frames préparées par (width, height, max_frames)
+_prepared_frames_cache: dict[tuple[int, int, int], tuple[List[Image.Image], int]] = {}
 _bg_frames_cache: Optional[List[Image.Image]] = None
 _bg_duration_cache: int = 60
+
+# Cache global des polices chargées
+_font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 
 # Couleurs
 NEON     = (0, 200, 255, 255)
 WHITE    = (255, 255, 255, 255)
-GREY     = (180, 190, 220, 255)
+GREY     = (200, 210, 230, 255)   # plus clair pour meilleure lisibilité
 BAR_BG   = (20, 25, 55, 180)
 GOLD     = (255, 215, 0, 255)
 SILVER   = (192, 192, 192, 255)
 BRONZE   = (205, 127, 50, 255)
-OVERLAY  = (0, 0, 0, 155)   # fond semi-transparent sous le texte
-SHADOW   = (0, 0, 0, 200)   # couleur des drop-shadows
+OVERLAY  = (0, 0, 0, 175)   # fond semi-transparent plus opaque
+SHADOW   = (0, 0, 0, 230)   # ombre plus marquée
 
 # Limites GIF
-MAX_FRAMES_CARD = 25   # cartes 620×200
-MAX_FRAMES_TOP  = 20   # classement 620×550
+MAX_FRAMES_CARD = 25
+MAX_FRAMES_TOP  = 20
 
 # ---------------------------------------------------------------------------
-# Utilitaires – polices
+# Utilitaires – polices (avec cache)
 # ---------------------------------------------------------------------------
 
-# NotoSans — dépôt openmaptiles (miroir stable, pas soumis aux restructurations Google Fonts)
 _NOTO_SANS_URL  = "https://github.com/openmaptiles/fonts/raw/master/noto-sans/NotoSans-Regular.ttf"
-# NotoEmoji — dépôt officiel notofonts (release mensuelle stable)
 _NOTO_EMOJI_URL = "https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2025.12.01/fonts/NotoSansSymbols/hinted/ttf/NotoSansSymbols-Regular.ttf"
+
+_fonts_downloaded = False
 
 
 def _download_file(url: str, dest: Path) -> bool:
@@ -74,7 +80,11 @@ def _download_file(url: str, dest: Path) -> bool:
 
 
 def _ensure_fonts() -> None:
-    """Télécharge Sekuya, NotoSans et NotoEmoji si absents."""
+    """Télécharge les polices si absentes — exécuté une seule fois."""
+    global _fonts_downloaded
+    if _fonts_downloaded:
+        return
+
     _FONT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     if not _SEKUYA_PATH.exists():
@@ -105,40 +115,54 @@ def _ensure_fonts() -> None:
             if _download_file(_url, _EMOJI_PATH):
                 break
 
+    _fonts_downloaded = True
+
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    """Charge Sekuya, puis NotoSans comme fallback."""
+    """Charge Sekuya (avec cache) puis NotoSans comme fallback."""
+    key = ("sekuya", size)
+    if key in _font_cache:
+        return _font_cache[key]
     _ensure_fonts()
     for path in (_SEKUYA_PATH, _NOTO_PATH):
         if path.exists():
             try:
-                return ImageFont.truetype(str(path), size)
+                font = ImageFont.truetype(str(path), size)
+                _font_cache[key] = font
+                return font
             except Exception:
                 continue
-    return ImageFont.load_default()
+    font = ImageFont.load_default()
+    _font_cache[key] = font
+    return font
 
 
 def _load_noto(size: int) -> ImageFont.FreeTypeFont:
-    """Charge NotoSans directement (texte courant)."""
+    """Charge NotoSans (avec cache)."""
+    key = ("noto", size)
+    if key in _font_cache:
+        return _font_cache[key]
     _ensure_fonts()
     if _NOTO_PATH.exists():
         try:
-            return ImageFont.truetype(str(_NOTO_PATH), size)
+            font = ImageFont.truetype(str(_NOTO_PATH), size)
+            _font_cache[key] = font
+            return font
         except Exception:
             pass
-    return ImageFont.load_default()
+    font = ImageFont.load_default()
+    _font_cache[key] = font
+    return font
 
 
 # ---------------------------------------------------------------------------
 # Utilitaires – texte / emojis
 # ---------------------------------------------------------------------------
 
-def _sanitize_text(text: str, max_len: int = 20) -> str:
+def _sanitize_text(text: str, max_len: int = 28) -> str:
     """
-    Nettoie un pseudo :
-    - Garde les caractères Latin, Cyrillic, Greek, CJK, Arabic + ASCII étendu.
-    - Remplace les emojis complexes (surrogates, variation selectors, ZWJ sequences, etc.)
-      par '?' pour éviter les carrés vides avec Pillow.
+    Nettoie un pseudo — limite étendue à 28 caractères par défaut.
+    Garde les caractères Latin, Cyrillic, Greek, CJK, Arabic + ASCII étendu.
     """
     result = []
     i = 0
@@ -146,24 +170,20 @@ def _sanitize_text(text: str, max_len: int = 20) -> str:
         ch = text[i]
         cp = ord(ch)
 
-        # Variation selectors / ZWJ / Combining marks → skip
         if unicodedata.category(ch) in ("Mn", "Cf") or cp == 0x200D:
             i += 1
             continue
 
-        # Emoji modifiers (fitzpatrick) – consume silently
         if 0x1F3FB <= cp <= 0x1F3FF:
             i += 1
             continue
 
-        # Emoji range (common blocks)
         if (0x1F300 <= cp <= 0x1FAFF) or (0x2600 <= cp <= 0x27BF) or \
            (0xFE00 <= cp <= 0xFE0F)   or (0xE0000 <= cp <= 0xE007F):
             result.append("?")
             i += 1
             continue
 
-        # Regional indicator (flags) – two chars form one flag → skip both
         if 0x1F1E0 <= cp <= 0x1F1FF:
             result.append("?")
             i += 2 if i + 1 < len(text) and 0x1F1E0 <= ord(text[i + 1]) <= 0x1F1FF else 1
@@ -187,9 +207,12 @@ def _draw_shadow_text(
     font: ImageFont.FreeTypeFont,
     fill: tuple,
     shadow_offset: int = 2,
+    shadow_blur: bool = False,
 ) -> None:
-    """Dessine un texte avec une ombre portée."""
+    """Dessine un texte avec ombre portée double pour meilleure lisibilité."""
     sx, sy = xy[0] + shadow_offset, xy[1] + shadow_offset
+    # Double shadow pour plus de contraste
+    draw.text((sx + 1, sy + 1), text, font=font, fill=SHADOW)
     draw.text((sx, sy), text, font=font, fill=SHADOW)
     draw.text(xy, text, font=font, fill=fill)
 
@@ -219,14 +242,11 @@ def _draw_overlay(image: Image.Image, x: int, y: int, w: int, h: int, radius: in
 
 
 # ---------------------------------------------------------------------------
-# GIF de fond
+# GIF de fond — chargement et préparation avec cache
 # ---------------------------------------------------------------------------
 
 def _load_bg_gif_sync() -> tuple[List[Image.Image], int]:
-    """
-    Charge le GIF depuis le cache disque (ou le télécharge).
-    Retourne (frames RGBA, durée ms par frame).
-    """
+    """Charge le GIF depuis le disque (ou le télécharge). Résultat mis en cache."""
     global _bg_frames_cache, _bg_duration_cache
 
     if _bg_frames_cache is not None:
@@ -270,51 +290,72 @@ def _prepare_bg_frames(
     target_h: int,
     max_frames: int,
 ) -> tuple[List[Image.Image], int]:
-    """Sélectionne, recadre et redimensionne les frames du GIF de fond."""
+    """
+    Sélectionne, recadre et redimensionne les frames du GIF de fond.
+    Résultat mis en cache par (target_w, target_h, max_frames).
+    """
+    cache_key = (target_w, target_h, max_frames)
+    if cache_key in _prepared_frames_cache:
+        return _prepared_frames_cache[cache_key]
+
     all_frames, duration = _load_bg_gif_sync()
 
     if not all_frames:
-        # Fond de secours si le GIF n'est pas disponible
         fallback = Image.new("RGBA", (target_w, target_h), (10, 12, 25, 255))
-        return [fallback], 60
+        result = ([fallback], 60)
+        _prepared_frames_cache[cache_key] = result
+        return result
 
-    # Sous-échantillonnage pour rester ≤ max_frames
     step    = max(1, len(all_frames) // max_frames)
     sampled = all_frames[::step][:max_frames]
 
-    result: List[Image.Image] = []
+    prepared: List[Image.Image] = []
     for frame in sampled:
         fitted = ImageOps.fit(frame, (target_w, target_h), method=Image.LANCZOS)
-        # Légère dégradation pour lisibilité du texte
-        fitted = ImageEnhance.Brightness(fitted).enhance(0.55)
-        result.append(fitted)
+        fitted = ImageEnhance.Brightness(fitted).enhance(0.50)  # légèrement plus sombre
+        prepared.append(fitted)
 
-    return result, duration
+    result = (prepared, duration)
+    _prepared_frames_cache[cache_key] = result
+    logger.info("Frames préparées mises en cache pour %dx%d (%d frames).", target_w, target_h, len(prepared))
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Avatar
 # ---------------------------------------------------------------------------
 
+# Cache des avatars téléchargés
+_avatar_cache: dict[tuple[str, int], Optional[Image.Image]] = {}
+
+
 async def _fetch_avatar(url: Optional[str], size: int) -> Optional[Image.Image]:
     if not url:
         return None
+
+    cache_key = (url, size)
+    if cache_key in _avatar_cache:
+        return _avatar_cache[cache_key]
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status != 200:
+                    _avatar_cache[cache_key] = None
                     return None
                 data = await resp.read()
 
         avatar = Image.open(io.BytesIO(data)).convert("RGBA").resize((size, size), Image.LANCZOS)
-        # Masque circulaire
         mask = Image.new("L", (size, size), 0)
         ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
         output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         output.paste(avatar, mask=mask)
+        # Ajouter un contour néon autour de l'avatar
+        _avatar_cache[cache_key] = output
         return output
     except Exception as exc:
         logger.warning("Erreur avatar : %s", exc)
+        _avatar_cache[cache_key] = None
         return None
 
 
@@ -334,11 +375,11 @@ def _build_xp_card_frames_sync(
     W, H = 620, 200
     bg_frames, duration = _prepare_bg_frames(W, H, MAX_FRAMES_CARD)
 
-    font_name  = _load_font(36)
+    font_name  = _load_font(34)
     font_level = _load_noto(20)
     font_small = _load_noto(15)
 
-    name_clean = _sanitize_text(name, 18)
+    name_clean = _sanitize_text(name, 24)
     ratio      = xp_progress / xp_required if xp_required > 0 else 1.0
 
     output_frames: List[Image.Image] = []
@@ -346,43 +387,42 @@ def _build_xp_card_frames_sync(
     for bg in bg_frames:
         frame = bg.copy()
 
-        # --- Overlay derrière la zone de texte
-        _draw_overlay(frame, x=155, y=20, w=440, h=160, radius=16)
+        # Overlay plus opaque pour meilleure lisibilité
+        _draw_overlay(frame, x=150, y=15, w=450, h=170, radius=16)
 
-        # --- Avatar
+        # Avatar
         if avatar:
             av_size = 120
-            av_x, av_y = 20, 40
-            # Halo néon autour de l'avatar
+            av_x, av_y = 15, 40
             halo = Image.new("RGBA", frame.size, (0, 0, 0, 0))
             ImageDraw.Draw(halo).ellipse(
                 (av_x - 4, av_y - 4, av_x + av_size + 4, av_y + av_size + 4),
-                fill=(0, 200, 255, 80),
+                fill=(0, 200, 255, 90),
             )
             frame.alpha_composite(halo)
             frame.paste(avatar, (av_x, av_y), avatar)
 
         draw = ImageDraw.Draw(frame)
 
-        # --- Nom
-        _draw_shadow_text(draw, (168, 28), name_clean, font_name, WHITE)
+        # Nom
+        _draw_shadow_text(draw, (163, 25), name_clean, font_name, WHITE)
 
-        # --- Niveau
-        _draw_shadow_text(draw, (168, 76), f"NIVEAU {level}", font_level, NEON)
+        # Niveau
+        _draw_shadow_text(draw, (163, 72), f"NIVEAU {level}", font_level, NEON)
 
-        # --- XP
+        # XP (plus lisible avec GREY plus clair)
         xp_label = f"{xp_progress} / {xp_required} XP"
-        _draw_shadow_text(draw, (420, 78), xp_label, font_small, GREY)
+        _draw_shadow_text(draw, (420, 74), xp_label, font_small, GREY)
 
-        # --- Barre
-        _draw_xp_bar(draw, 168, 118, 420, 18, ratio)
+        # Barre XP
+        _draw_xp_bar(draw, 163, 112, 425, 18, ratio)
 
-        # Pourcentage sur la barre
+        # Pourcentage
         pct_label = f"{int(ratio * 100)}%"
-        _draw_shadow_text(draw, (168 + 420 // 2 - 15, 120), pct_label, font_small, WHITE)
+        _draw_shadow_text(draw, (163 + 425 // 2 - 15, 114), pct_label, font_small, WHITE)
 
-        # --- XP total (coin bas droit)
-        _draw_shadow_text(draw, (168, 150), f"Total : {xp_total} XP", font_small, GREY)
+        # XP total
+        _draw_shadow_text(draw, (163, 145), f"Total : {xp_total} XP", font_small, GREY)
 
         output_frames.append(frame)
 
@@ -410,21 +450,19 @@ def _build_levelup_frames_sync(
     font_rank  = _load_noto(18)
     font_small = _load_noto(14)
 
-    name_clean  = _sanitize_text(name, 18)
+    name_clean  = _sanitize_text(name, 24)
     n_frames    = len(bg_frames)
     output_frames: List[Image.Image] = []
 
     for idx, bg in enumerate(bg_frames):
         frame = bg.copy()
-        anim  = idx / max(n_frames - 1, 1)   # 0.0 → 1.0
+        anim  = idx / max(n_frames - 1, 1)
 
-        # Overlay global
-        _draw_overlay(frame, x=150, y=15, w=450, h=150, radius=16)
+        _draw_overlay(frame, x=145, y=12, w=458, h=156, radius=16)
 
-        # Avatar
         if avatar:
             av_size = 100
-            av_x, av_y = 25, 40
+            av_x, av_y = 22, 40
             halo = Image.new("RGBA", frame.size, (0, 0, 0, 0))
             pulse_alpha = int(60 + 80 * abs(anim - 0.5) * 2)
             ImageDraw.Draw(halo).ellipse(
@@ -436,16 +474,15 @@ def _build_levelup_frames_sync(
 
         draw = ImageDraw.Draw(frame)
 
-        _draw_shadow_text(draw, (163, 20), "LEVEL UP !", font_title, NEON)
-        _draw_shadow_text(draw, (163, 68), name_clean,   font_name,  WHITE)
-        _draw_shadow_text(draw, (163, 98), f"Rang {old_level} → {new_level}", font_rank, GREY)
+        _draw_shadow_text(draw, (158, 18), "LEVEL UP !", font_title, NEON)
+        _draw_shadow_text(draw, (158, 66), name_clean,   font_name,  WHITE)
+        _draw_shadow_text(draw, (158, 96), f"Rang {old_level} → {new_level}", font_rank, GREY)
 
-        # Barre animée : remplit progressivement
         ratio = (xp_progress / xp_required if xp_required > 0 else 1.0) * anim
-        _draw_xp_bar(draw, 163, 132, 430, 14, ratio)
+        _draw_xp_bar(draw, 158, 128, 435, 14, ratio)
 
         xp_label = f"{xp_progress} / {xp_required}"
-        _draw_shadow_text(draw, (163, 150), xp_label, font_small, GREY)
+        _draw_shadow_text(draw, (158, 148), xp_label, font_small, GREY)
 
         output_frames.append(frame)
 
@@ -463,66 +500,74 @@ def _build_topxp_frames_sync(
     xp_to_level_fn: Callable[[int], int],
 ) -> tuple[List[Image.Image], int]:
 
-    W, H = 620, 550
+    W, H = 620, 560
     bg_frames, duration = _prepare_bg_frames(W, H, MAX_FRAMES_TOP)
 
-    font_title = _load_noto(22)
-    font_row   = _load_noto(17)
-    font_small = _load_noto(13)
+    # Titre en Sekuya, plus grand
+    font_title  = _load_font(26)
+    font_row    = _load_noto(17)
+    font_small  = _load_noto(13)
+    font_xp     = _load_noto(14)    # police dédiée XP, légèrement plus grande
 
-    guild_clean = _sanitize_text(guild_name, 30)
+    # Limite étendue pour le nom du serveur
+    guild_clean = _sanitize_text(guild_name, 36)
     rank_colors = [GOLD, SILVER, BRONZE]
     output_frames: List[Image.Image] = []
 
     for bg in bg_frames:
         frame = bg.copy()
 
-        # Overlay global sur toute la zone de classement
-        _draw_overlay(frame, x=10, y=10, w=600, h=530, radius=20)
+        # Overlay global
+        _draw_overlay(frame, x=8, y=8, w=604, h=544, radius=20)
 
         draw = ImageDraw.Draw(frame)
 
-        # Titre
+        # Titre serveur — Sekuya + grand
         title_text = f"CLASSEMENT  {guild_clean.upper()}"
-        _draw_shadow_text(draw, (25, 22), title_text, font_title, NEON)
+        _draw_shadow_text(draw, (20, 18), title_text, font_title, NEON, shadow_offset=2)
 
         # Séparateur
-        draw.line((25, 60, 595, 60), fill=(0, 200, 255, 80), width=1)
+        draw.line((20, 58, 600, 58), fill=(0, 200, 255, 100), width=1)
 
-        y = 75
+        y = 68
         for idx, entry in enumerate(entries[:10]):
             rank_color = rank_colors[idx] if idx < 3 else WHITE
 
-            # Fond de ligne alterné
+            # Fond de ligne alterné légèrement plus visible
             if idx % 2 == 0:
                 row_ov = Image.new("RGBA", frame.size, (0, 0, 0, 0))
                 ImageDraw.Draw(row_ov).rectangle(
-                    (18, y - 3, 602, y + 34), fill=(255, 255, 255, 8)
+                    (16, y - 2, 604, y + 38), fill=(255, 255, 255, 12)
                 )
                 frame.alpha_composite(row_ov)
                 draw = ImageDraw.Draw(frame)
 
             # Rang
-            _draw_shadow_text(draw, (22, y + 4), f"#{idx + 1}", font_row, rank_color)
+            _draw_shadow_text(draw, (20, y + 6), f"#{idx + 1}", font_row, rank_color)
 
             # Avatar
             av = avatars[idx] if idx < len(avatars) else None
             if av:
-                small_av = av.resize((28, 28), Image.LANCZOS)
-                frame.paste(small_av, (68, y + 2), small_av)
+                small_av = av.resize((30, 30), Image.LANCZOS)
+                frame.paste(small_av, (64, y + 4), small_av)
                 draw = ImageDraw.Draw(frame)
 
-            # Nom
-            name_clean = _sanitize_text(entry.get("user_name", "Inconnu"), 18)
-            _draw_shadow_text(draw, (105, y + 4), name_clean, font_row, WHITE)
+            # Nom — limite étendue à 24 caractères
+            name_clean = _sanitize_text(entry.get("user_name", "Inconnu"), 24)
+            _draw_shadow_text(draw, (102, y + 6), name_clean, font_row, WHITE)
 
-            # Niveau + XP
-            xp_val  = int(entry.get("xp", 0) or 0)
-            lv      = xp_to_level_fn(xp_val)
-            _draw_shadow_text(draw, (385, y + 5), f"LVL {lv}", font_small, NEON)
-            _draw_shadow_text(draw, (480, y + 5), f"{xp_val:,} XP", font_small, GREY)
+            # Niveau + XP — côté droit, plus lisible
+            xp_val = int(entry.get("xp", 0) or 0)
+            lv     = xp_to_level_fn(xp_val)
 
-            y += 42
+            # Fond pour le niveau
+            lv_text = f"LVL {lv}"
+            xp_text = f"{xp_val:,} XP"
+
+            _draw_shadow_text(draw, (390, y + 7), lv_text,  font_xp,   NEON,  shadow_offset=2)
+            _draw_shadow_text(draw, (470, y + 7), xp_text,  font_xp,   GREY,  shadow_offset=2)
+
+            y += 46
 
         output_frames.append(frame)
 
@@ -623,8 +668,7 @@ async def generate_topxp_card(
     if not _PIL_AVAILABLE:
         return None
 
-    # Téléchargement de tous les avatars en parallèle
-    avatar_tasks = [_fetch_avatar(e.get("avatar_url"), 28) for e in entries[:10]]
+    avatar_tasks = [_fetch_avatar(e.get("avatar_url"), 30) for e in entries[:10]]
     avatars      = list(await asyncio.gather(*avatar_tasks))
 
     loop = asyncio.get_event_loop()
