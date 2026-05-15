@@ -1,5 +1,5 @@
-# card_generator.py — VERSION OPTIMISÉE (LOW MEMORY SAFE)
-# Objectif : 0 crash Koyeb + rendu propre + rapide
+# card_generator.py — VERSION OPTIMISÉE (COMPAT API + LOW MEMORY)
+# Drop-in replacement : même API que ton ancien fichier
 
 import asyncio
 import io
@@ -17,9 +17,7 @@ WIDTH_CARD = 620
 HEIGHT_CARD = 200
 WIDTH_TOP = 620
 HEIGHT_TOP = 560
-
-# 🔥 ON PASSE EN IMAGE STATIQUE
-FORMAT = "PNG"
+FORMAT = "PNG"  # 🔥 SAFE pour mémoire
 
 # ===================== CACHE LIGHT =====================
 _font_cache = {}
@@ -40,15 +38,16 @@ def _load_font(size: int):
 async def _fetch_avatar(url: Optional[str], size: int):
     if not url:
         return None
-    if url in _avatar_cache:
-        return _avatar_cache[url]
+    key = (url, size)
+    if key in _avatar_cache:
+        return _avatar_cache[key]
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
                 data = await resp.read()
         img = Image.open(io.BytesIO(data)).convert("RGBA")
         img = img.resize((size, size))
-        _avatar_cache[url] = img
+        _avatar_cache[key] = img
         return img
     except:
         return None
@@ -58,8 +57,8 @@ def _draw_bar(draw, x, y, w, h, progress):
     draw.rectangle((x, y, x+w, y+h), fill=(40, 40, 60))
     draw.rectangle((x, y, x+int(w*progress), y+h), fill=(0, 200, 255))
 
-# ===================== BUILD CARD =====================
-def _build_card(name, avatar, level, xp_progress, xp_required, xp_total):
+# ===================== BUILD XP CARD =====================
+def _build_xp_card(member_name, avatar, level, xp_progress, xp_required, xp_total):
     img = Image.new("RGB", (WIDTH_CARD, HEIGHT_CARD), (15, 20, 40))
     draw = ImageDraw.Draw(img)
 
@@ -69,13 +68,33 @@ def _build_card(name, avatar, level, xp_progress, xp_required, xp_total):
     if avatar:
         img.paste(avatar, (20, 40))
 
-    draw.text((160, 30), name, font=font_big, fill=(255,255,255))
+    draw.text((160, 30), member_name, font=font_big, fill=(255,255,255))
     draw.text((160, 70), f"LEVEL {level}", font=font_small, fill=(0,200,255))
 
     ratio = xp_progress / xp_required if xp_required else 1
     _draw_bar(draw, 160, 110, 400, 20, ratio)
 
     draw.text((160, 140), f"{xp_progress}/{xp_required} XP", font=font_small, fill=(200,200,200))
+
+    return img
+
+# ===================== BUILD LEVEL UP =====================
+def _build_levelup(member_name, avatar, old_level, new_level, xp_progress, xp_required):
+    img = Image.new("RGB", (WIDTH_CARD, HEIGHT_CARD), (15, 20, 40))
+    draw = ImageDraw.Draw(img)
+
+    font_big = _load_font(28)
+    font_small = _load_font(16)
+
+    if avatar:
+        img.paste(avatar, (20, 40))
+
+    draw.text((160, 30), "LEVEL UP!", font=font_big, fill=(0,200,255))
+    draw.text((160, 70), member_name, font=font_small, fill=(255,255,255))
+    draw.text((160, 100), f"{old_level} → {new_level}", font=font_small, fill=(200,200,200))
+
+    ratio = xp_progress / xp_required if xp_required else 1
+    _draw_bar(draw, 160, 130, 400, 15, ratio)
 
     return img
 
@@ -95,8 +114,9 @@ def _build_top(guild_name, entries, avatars, xp_to_level_fn):
         xp = e.get("xp", 0)
         lvl = xp_to_level_fn(xp)
 
-        if avatars[i]:
-            img.paste(avatars[i], (20, y))
+        av = avatars[i] if i < len(avatars) else None
+        if av:
+            img.paste(av, (20, y))
 
         draw.text((60, y), f"#{i+1} {name}", font=font_row, fill=(255,255,255))
         draw.text((400, y), f"LVL {lvl}", font=font_row, fill=(0,200,255))
@@ -114,24 +134,35 @@ def _encode(img):
     buf.seek(0)
     return buf
 
-# ===================== PUBLIC API =====================
-async def generate_xp_card(name, avatar_url, level, xp_total, xp_progress, xp_required):
+# ===================== PUBLIC API (COMPATIBLE) =====================
+async def generate_xp_card(member_name, avatar_url, level, xp_total, xp_progress, xp_required):
     avatar = await _fetch_avatar(avatar_url, 100)
     loop = asyncio.get_event_loop()
-    img = await loop.run_in_executor(None, partial(_build_card, name, avatar, level, xp_progress, xp_required, xp_total))
+    img = await loop.run_in_executor(
+        None,
+        partial(_build_xp_card, member_name, avatar, level, xp_progress, xp_required, xp_total),
+    )
+    return await loop.run_in_executor(None, partial(_encode, img))
+
+async def generate_levelup_card(member_name, avatar_url, old_level, new_level, xp_total, xp_progress, xp_required):
+    avatar = await _fetch_avatar(avatar_url, 100)
+    loop = asyncio.get_event_loop()
+    img = await loop.run_in_executor(
+        None,
+        partial(_build_levelup, member_name, avatar, old_level, new_level, xp_progress, xp_required),
+    )
     return await loop.run_in_executor(None, partial(_encode, img))
 
 async def generate_topxp_card(guild_name, entries, xp_to_level_fn):
     avatars = await asyncio.gather(*[_fetch_avatar(e.get("avatar_url"), 30) for e in entries[:10]])
     loop = asyncio.get_event_loop()
-    img = await loop.run_in_executor(None, partial(_build_top, guild_name, entries, avatars, xp_to_level_fn))
+    img = await loop.run_in_executor(
+        None,
+        partial(_build_top, guild_name, entries, avatars, xp_to_level_fn),
+    )
     return await loop.run_in_executor(None, partial(_encode, img))
 
-async def generate_levelup_card(name, avatar_url, old_level, new_level, xp_total, xp_progress, xp_required):
-    # simple reuse
-    return await generate_xp_card(name, avatar_url, new_level, xp_total, xp_progress, xp_required)
-
-# ===================== CLEAN CACHE =====================
+# ===================== CACHE CONTROL =====================
 def clear_caches():
     _avatar_cache.clear()
     if len(_font_cache) > 10:
@@ -139,4 +170,4 @@ def clear_caches():
 
 # ===================== WARMUP =====================
 async def warmup():
-    logger.info("Card generator ready (LOW MEMORY MODE)")
+    logger.info("Card generator ready (COMPAT + LOW MEMORY)")
