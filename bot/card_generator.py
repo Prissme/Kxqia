@@ -1,16 +1,7 @@
 """
-card_generator.py — GIF animé, rendu ultra-rapide
-
-Optimisations vs version originale :
-  - Frames de fond préparées UNE seule fois par résolution (cache permanent)
-  - Overlays / halos statiques pré-calculés hors de la boucle de frames
-  - Polices chargées une seule fois, puis servies depuis le dict cache
-  - Avatars téléchargés en parallèle pour /topxp (asyncio.gather)
-  - Encodage GIF avec quantification FASTOCTREE 128 couleurs (~2× plus rapide,
-    fichier ~3× plus léger)
-  - warmup() à appeler dans on_ready pour éliminer la latence du 1er appel
+card_generator.py — Version améliorée 2026
+GIF de bien meilleure qualité tout en gardant une bonne vitesse.
 """
-from __future__ import annotations
 
 import asyncio
 import io
@@ -25,14 +16,9 @@ from typing import Callable, Optional
 
 import aiohttp
 
-logger = logging.getLogger(__name__)
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance, ImageFilter
 
-try:
-    from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
-    _PIL_AVAILABLE = True
-except ImportError:
-    _PIL_AVAILABLE = False
-    logger.warning("Pillow non installé — cards désactivées.")
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Chemins
@@ -59,7 +45,6 @@ BRONZE  = (205, 127, 50, 255)
 OVERLAY = (0, 0, 0, 175)
 SHADOW  = (0, 0, 0, 230)
 
-# Nombre de frames (réduit vs original pour garder l'animation fluide mais rapide)
 MAX_FRAMES_CARD = 18
 MAX_FRAMES_TOP  = 14
 
@@ -73,11 +58,9 @@ _raw_bg_frames: list[Image.Image] = []
 _raw_bg_duration: int = 60
 _bg_loaded: bool = False
 
-# Frames préparées (resize + brightness) par (w, h, max_frames)
 _prepared_cache: dict[tuple[int, int, int], tuple[list[Image.Image], int]] = {}
-
-# Cache avatars : (url, size) → Image RGBA circulaire
 _avatar_cache: dict[tuple[str, int], Optional[Image.Image]] = {}
+
 
 # ---------------------------------------------------------------------------
 # Polices
@@ -113,7 +96,7 @@ def _ensure_fonts() -> None:
                 ),
                 timeout=10,
             ).read().decode()
-            m = re.search(r"url\((https://[^)]+\.ttf[^)]*)\)", css)
+            m = re.search(r"url\[](https://[^)]+\.ttf[^)]*)\)", css)
             if m:
                 _dl(m.group(1), _SEKUYA_PATH)
         except Exception:
@@ -126,7 +109,6 @@ def _ensure_fonts() -> None:
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    """Charge Sekuya (ou NotoSans en fallback) depuis le cache."""
     key = ("sekuya", size)
     if key in _font_cache:
         return _font_cache[key]
@@ -145,7 +127,6 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def _load_noto(size: int) -> ImageFont.FreeTypeFont:
-    """Charge NotoSans depuis le cache."""
     key = ("noto", size)
     if key in _font_cache:
         return _font_cache[key]
@@ -167,7 +148,6 @@ def _load_noto(size: int) -> ImageFont.FreeTypeFont:
 # ---------------------------------------------------------------------------
 
 def _load_raw_bg_gif() -> None:
-    """Charge les frames brutes du GIF de fond en mémoire (une seule fois)."""
     global _raw_bg_frames, _raw_bg_duration, _bg_loaded
     if _bg_loaded:
         return
@@ -204,11 +184,6 @@ def _load_raw_bg_gif() -> None:
 
 
 def _get_prepared_frames(w: int, h: int, max_frames: int) -> tuple[list[Image.Image], int]:
-    """
-    Retourne les frames redimensionnées + assombries pour une résolution donnée.
-    Calculées UNE seule fois puis stockées dans _prepared_cache.
-    Les appelants font .copy() pour obtenir des frames mutables.
-    """
     key = (w, h, max_frames)
     if key in _prepared_cache:
         return _prepared_cache[key]
@@ -226,7 +201,7 @@ def _get_prepared_frames(w: int, h: int, max_frames: int) -> tuple[list[Image.Im
     prepared: list[Image.Image] = []
     for frame in sampled:
         fitted = ImageOps.fit(frame, (w, h), method=Image.LANCZOS)
-        fitted = ImageEnhance.Brightness(fitted).enhance(0.50)
+        fitted = ImageEnhance.Brightness(fitted).enhance(0.52)
         prepared.append(fitted)
 
     _prepared_cache[key] = (prepared, _raw_bg_duration)
@@ -235,7 +210,6 @@ def _get_prepared_frames(w: int, h: int, max_frames: int) -> tuple[list[Image.Im
 
 
 def _get_frames_copy(w: int, h: int, max_frames: int) -> tuple[list[Image.Image], int]:
-    """Retourne des copies des frames préparées, prêtes à être dessinées dessus."""
     frames, duration = _get_prepared_frames(w, h, max_frames)
     return [f.copy() for f in frames], duration
 
@@ -262,13 +236,12 @@ def _draw_xp_bar(
     draw: ImageDraw.ImageDraw,
     x: int, y: int, w: int, h: int,
     progress: float,
-    color: tuple = NEON,
 ) -> None:
     draw.rounded_rectangle((x, y, x + w, y + h), radius=h // 2, fill=BAR_BG)
     ratio    = max(0.0, min(1.0, progress))
     filled_w = int(w * ratio)
     if filled_w > h:
-        draw.rounded_rectangle((x, y, x + filled_w, y + h), radius=h // 2, fill=color)
+        draw.rounded_rectangle((x, y, x + filled_w, y + h), radius=h // 2, fill=NEON)
 
 
 def _sanitize_text(text: str, max_len: int = 28) -> str:
@@ -324,34 +297,44 @@ async def _fetch_avatar(url: Optional[str], size: int) -> Optional[Image.Image]:
 
 
 # ---------------------------------------------------------------------------
-# Encodage GIF optimisé
+# **ENCODAGE GIF AMÉLIORÉ**
 # ---------------------------------------------------------------------------
 
 def _encode_gif(frames: list[Image.Image], duration: int) -> io.BytesIO:
-    """
-    Quantification FASTOCTREE 128 couleurs :
-    ~2× plus rapide et fichier ~3× plus léger que la méthode RGB naïve.
-    """
-    palette_frames = [
-        f.convert("RGB").quantize(colors=128, method=Image.Quantize.FASTOCTREE)
-        for f in frames
-    ]
+    """Version améliorée : meilleure qualité visuelle"""
+    processed = []
+
+    for frame in frames:
+        # Conversion + netteté pour compenser la compression GIF
+        img = frame.convert("RGB")
+        img = img.filter(ImageFilter.SHARPEN)        # ← très important
+        img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
+
+        # Meilleure quantification
+        quantized = img.quantize(
+            colors=256,                              # 256 au lieu de 128
+            method=Image.Quantize.MEDIANCUT,         # meilleur pour les néons et textes
+            dither=Image.Dither.FLOYDSTEINBERG       # dithering de qualité
+        )
+        processed.append(quantized)
+
     buf = io.BytesIO()
-    palette_frames[0].save(
+    processed[0].save(
         buf,
         format="GIF",
         save_all=True,
-        append_images=palette_frames[1:],
+        append_images=processed[1:],
         duration=duration,
         loop=0,
         optimize=True,
+        disposal=2,                     # important pour animation fluide
     )
     buf.seek(0)
     return buf
 
 
 # ---------------------------------------------------------------------------
-# Construction XP card (620×200)
+# Construction des cartes
 # ---------------------------------------------------------------------------
 
 def _build_xp_card_sync(
@@ -373,11 +356,9 @@ def _build_xp_card_sync(
     name_clean = _sanitize_text(name, 24)
     ratio      = xp_progress / xp_required if xp_required > 0 else 1.0
 
-    # Overlay statique pré-calculé UNE fois pour toutes les frames
     static_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ImageDraw.Draw(static_ov).rounded_rectangle((150, 15, 600, 185), radius=16, fill=OVERLAY)
 
-    # Halo avatar pré-calculé (statique)
     halo = None
     if avatar:
         halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -405,10 +386,6 @@ def _build_xp_card_sync(
     return output, duration
 
 
-# ---------------------------------------------------------------------------
-# Construction Level Up (620×180)
-# ---------------------------------------------------------------------------
-
 def _build_levelup_sync(
     name: str,
     avatar: Optional[Image.Image],
@@ -429,7 +406,6 @@ def _build_levelup_sync(
     name_clean = _sanitize_text(name, 24)
     n          = len(frames)
 
-    # Overlay statique pré-calculé
     static_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ImageDraw.Draw(static_ov).rounded_rectangle((145, 12, 603, 168), radius=16, fill=OVERLAY)
 
@@ -440,7 +416,6 @@ def _build_levelup_sync(
         anim = idx / max(n - 1, 1)
 
         if avatar:
-            # Halo pulsé recalculé par frame (c'est l'animation)
             halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             pulse = int(60 + 80 * abs(anim - 0.5) * 2)
             ImageDraw.Draw(halo).ellipse((17, 35, 127, 145), fill=(0, 200, 255, pulse))
@@ -460,10 +435,6 @@ def _build_levelup_sync(
     return output, duration
 
 
-# ---------------------------------------------------------------------------
-# Construction Top XP (620×560)
-# ---------------------------------------------------------------------------
-
 def _build_topxp_sync(
     guild_name: str,
     entries: list[dict],
@@ -481,11 +452,9 @@ def _build_topxp_sync(
     guild_clean = _sanitize_text(guild_name, 36)
     rank_colors = [GOLD, SILVER, BRONZE]
 
-    # Overlay global pré-calculé
     static_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ImageDraw.Draw(static_ov).rounded_rectangle((8, 8, 612, 552), radius=20, fill=OVERLAY)
 
-    # Overlays de lignes alternées pré-calculés hors de la boucle de frames
     row_ovs: list[Optional[Image.Image]] = []
     y = 68
     for idx in range(len(entries[:10])):
@@ -511,7 +480,6 @@ def _build_topxp_sync(
             ov = row_ovs[idx]
             if ov is not None:
                 frame.alpha_composite(ov)
-                draw = ImageDraw.Draw(frame)
 
             rank_color = rank_colors[idx] if idx < 3 else WHITE
             _draw_shadow_text(draw, (20, y + 6), f"#{idx + 1}", font_row, rank_color)
@@ -519,7 +487,6 @@ def _build_topxp_sync(
             av = avatars[idx] if idx < len(avatars) else None
             if av:
                 frame.paste(av, (64, y + 4), av)
-                draw = ImageDraw.Draw(frame)
 
             name_clean = _sanitize_text(entry.get("user_name", "Inconnu"), 24)
             _draw_shadow_text(draw, (102, y + 6), name_clean, font_row, WHITE)
@@ -547,13 +514,12 @@ async def generate_xp_card(
     xp_progress: int,
     xp_required: int,
 ) -> Optional[io.BytesIO]:
-    if not _PIL_AVAILABLE:
+    if not Image:  # Pillow disponible ?
         return None
-    avatar           = await _fetch_avatar(avatar_url, 120)
-    loop             = asyncio.get_event_loop()
+    avatar = await _fetch_avatar(avatar_url, 120)
+    loop = asyncio.get_event_loop()
     frames, duration = await loop.run_in_executor(
-        None,
-        partial(_build_xp_card_sync, member_name, avatar, level, xp_progress, xp_required, xp_total),
+        None, partial(_build_xp_card_sync, member_name, avatar, level, xp_progress, xp_required, xp_total)
     )
     return await loop.run_in_executor(None, partial(_encode_gif, frames, duration))
 
@@ -567,13 +533,12 @@ async def generate_levelup_card(
     xp_progress: int,
     xp_required: int,
 ) -> Optional[io.BytesIO]:
-    if not _PIL_AVAILABLE:
+    if not Image:
         return None
-    avatar           = await _fetch_avatar(avatar_url, 100)
-    loop             = asyncio.get_event_loop()
+    avatar = await _fetch_avatar(avatar_url, 100)
+    loop = asyncio.get_event_loop()
     frames, duration = await loop.run_in_executor(
-        None,
-        partial(_build_levelup_sync, member_name, avatar, old_level, new_level, xp_progress, xp_required),
+        None, partial(_build_levelup_sync, member_name, avatar, old_level, new_level, xp_progress, xp_required)
     )
     return await loop.run_in_executor(None, partial(_encode_gif, frames, duration))
 
@@ -583,29 +548,23 @@ async def generate_topxp_card(
     entries: list[dict],
     xp_to_level_fn: Callable[[int], int],
 ) -> Optional[io.BytesIO]:
-    if not _PIL_AVAILABLE:
+    if not Image:
         return None
-    # Tous les avatars téléchargés en parallèle — gain majeur sur /topxp
-    avatars          = list(await asyncio.gather(*[
+    avatars = list(await asyncio.gather(*[
         _fetch_avatar(e.get("avatar_url"), 30) for e in entries[:10]
     ]))
-    loop             = asyncio.get_event_loop()
+    loop = asyncio.get_event_loop()
     frames, duration = await loop.run_in_executor(
-        None,
-        partial(_build_topxp_sync, guild_name, entries[:10], avatars, xp_to_level_fn),
+        None, partial(_build_topxp_sync, guild_name, entries[:10], avatars, xp_to_level_fn)
     )
     return await loop.run_in_executor(None, partial(_encode_gif, frames, duration))
 
 
 # ---------------------------------------------------------------------------
-# Warmup — appeler dans on_ready pour préchauffer tous les caches
+# Warmup
 # ---------------------------------------------------------------------------
 
 def warmup_sync() -> None:
-    """
-    Télécharge les polices + le GIF de fond, calcule les 3 résolutions.
-    À exécuter dans un executor depuis on_ready.
-    """
     _ensure_fonts()
     _load_raw_bg_gif()
     for w, h, mf in (
@@ -618,5 +577,4 @@ def warmup_sync() -> None:
 
 
 async def warmup() -> None:
-    """Appeler cette coroutine dans on_ready : await warmup()"""
     await asyncio.get_event_loop().run_in_executor(None, warmup_sync)
