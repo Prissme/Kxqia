@@ -1,6 +1,6 @@
 """
-card_generator.py — Version améliorée 2026
-GIF de bien meilleure qualité tout en gardant une bonne vitesse.
+card_generator.py — Version Finale Optimisée (WebP + GIF)
+Meilleure qualité + bonne vitesse
 """
 
 import asyncio
@@ -15,10 +15,15 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import aiohttp
-
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance, ImageFilter
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Configuration Format
+# ---------------------------------------------------------------------------
+USE_WEBP = True          # Change en False pour revenir au GIF
+WEBP_QUALITY = 92
 
 # ---------------------------------------------------------------------------
 # Chemins
@@ -65,14 +70,12 @@ _avatar_cache: dict[tuple[str, int], Optional[Image.Image]] = {}
 # ---------------------------------------------------------------------------
 # Polices
 # ---------------------------------------------------------------------------
-_NOTO_SANS_URL = (
-    "https://github.com/openmaptiles/fonts/raw/master/noto-sans/NotoSans-Regular.ttf"
-)
+_NOTO_SANS_URL = "https://github.com/openmaptiles/fonts/raw/master/noto-sans/NotoSans-Regular.ttf"
 
 
 def _dl(url: str, dest: Path) -> bool:
     try:
-        req  = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         data = urllib.request.urlopen(req, timeout=10).read()
         dest.write_bytes(data)
         return True
@@ -146,7 +149,6 @@ def _load_noto(size: int) -> ImageFont.FreeTypeFont:
 # ---------------------------------------------------------------------------
 # GIF de fond
 # ---------------------------------------------------------------------------
-
 def _load_raw_bg_gif() -> None:
     global _raw_bg_frames, _raw_bg_duration, _bg_loaded
     if _bg_loaded:
@@ -156,10 +158,10 @@ def _load_raw_bg_gif() -> None:
 
     if not _BG_GIF_PATH.exists():
         try:
-            req  = urllib.request.Request(_BG_GIF_URL, headers={"User-Agent": "Mozilla/5.0"})
+            req = urllib.request.Request(_BG_GIF_URL, headers={"User-Agent": "Mozilla/5.0"})
             data = urllib.request.urlopen(req, timeout=20).read()
             _BG_GIF_PATH.write_bytes(data)
-            logger.info("GIF de fond téléchargé (%d octets).", len(data))
+            logger.info("GIF de fond téléchargé.")
         except Exception as exc:
             logger.warning("GIF fond indisponible : %s", exc)
             _bg_loaded = True
@@ -176,7 +178,6 @@ def _load_raw_bg_gif() -> None:
         except EOFError:
             pass
         _raw_bg_frames = frames
-        logger.info("GIF brut chargé : %d frames, %d ms/frame.", len(frames), _raw_bg_duration)
     except Exception as exc:
         logger.warning("Erreur lecture GIF : %s", exc)
 
@@ -195,17 +196,14 @@ def _get_prepared_frames(w: int, h: int, max_frames: int) -> tuple[list[Image.Im
         _prepared_cache[key] = ([fallback], 60)
         return _prepared_cache[key]
 
-    step    = max(1, len(_raw_bg_frames) // max_frames)
+    step = max(1, len(_raw_bg_frames) // max_frames)
     sampled = _raw_bg_frames[::step][:max_frames]
 
-    prepared: list[Image.Image] = []
-    for frame in sampled:
-        fitted = ImageOps.fit(frame, (w, h), method=Image.LANCZOS)
-        fitted = ImageEnhance.Brightness(fitted).enhance(0.52)
-        prepared.append(fitted)
-
+    prepared = [
+        ImageEnhance.Brightness(ImageOps.fit(f, (w, h), Image.LANCZOS)).enhance(0.52)
+        for f in sampled
+    ]
     _prepared_cache[key] = (prepared, _raw_bg_duration)
-    logger.info("Frames préparées mises en cache %dx%d (%d frames).", w, h, len(prepared))
     return _prepared_cache[key]
 
 
@@ -215,9 +213,8 @@ def _get_frames_copy(w: int, h: int, max_frames: int) -> tuple[list[Image.Image]
 
 
 # ---------------------------------------------------------------------------
-# Helpers de dessin
+# Helpers dessin
 # ---------------------------------------------------------------------------
-
 def _draw_shadow_text(
     draw: ImageDraw.ImageDraw,
     xy: tuple[int, int],
@@ -226,10 +223,10 @@ def _draw_shadow_text(
     fill: tuple,
     offset: int = 2,
 ) -> None:
-    sx, sy = xy[0] + offset, xy[1] + offset
-    draw.text((sx + 1, sy + 1), text, font=font, fill=SHADOW)
-    draw.text((sx,     sy),     text, font=font, fill=SHADOW)
-    draw.text(xy,               text, font=font, fill=fill)
+    x, y = xy
+    draw.text((x + offset, y + offset), text, font=font, fill=SHADOW)
+    draw.text((x + 1, y + 1), text, font=font, fill=SHADOW)
+    draw.text(xy, text, font=font, fill=fill)
 
 
 def _draw_xp_bar(
@@ -238,9 +235,8 @@ def _draw_xp_bar(
     progress: float,
 ) -> None:
     draw.rounded_rectangle((x, y, x + w, y + h), radius=h // 2, fill=BAR_BG)
-    ratio    = max(0.0, min(1.0, progress))
-    filled_w = int(w * ratio)
-    if filled_w > h:
+    filled_w = int(w * max(0.0, min(1.0, progress)))
+    if filled_w > 0:
         draw.rounded_rectangle((x, y, x + filled_w, y + h), radius=h // 2, fill=NEON)
 
 
@@ -251,17 +247,17 @@ def _sanitize_text(text: str, max_len: int = 28) -> str:
         ch = text[i]
         cp = ord(ch)
         if unicodedata.category(ch) in ("Mn", "Cf") or cp == 0x200D:
-            i += 1; continue
-        if 0x1F3FB <= cp <= 0x1F3FF:
-            i += 1; continue
-        if (0x1F300 <= cp <= 0x1FAFF) or (0x2600 <= cp <= 0x27BF) or \
-           (0xFE00  <= cp <= 0xFE0F)  or (0xE0000 <= cp <= 0xE007F):
-            result.append("?"); i += 1; continue
-        if 0x1F1E0 <= cp <= 0x1F1FF:
-            result.append("?")
-            i += 2 if i + 1 < len(text) and 0x1F1E0 <= ord(text[i + 1]) <= 0x1F1FF else 1
+            i += 1
             continue
-        result.append(ch); i += 1
+        if 0x1F3FB <= cp <= 0x1F3FF:
+            i += 1
+            continue
+        if (0x1F300 <= cp <= 0x1FAFF) or (0x2600 <= cp <= 0x27BF):
+            result.append("?")
+            i += 1
+            continue
+        result.append(ch)
+        i += 1
     clean = "".join(result).strip()
     return clean[:max_len] if clean else "Joueur"
 
@@ -269,7 +265,6 @@ def _sanitize_text(text: str, max_len: int = 28) -> str:
 # ---------------------------------------------------------------------------
 # Avatar
 # ---------------------------------------------------------------------------
-
 async def _fetch_avatar(url: Optional[str], size: int) -> Optional[Image.Image]:
     if not url:
         return None
@@ -283,10 +278,10 @@ async def _fetch_avatar(url: Optional[str], size: int) -> Optional[Image.Image]:
                     _avatar_cache[key] = None
                     return None
                 data = await resp.read()
-        av   = Image.open(io.BytesIO(data)).convert("RGBA").resize((size, size), Image.LANCZOS)
+        av = Image.open(io.BytesIO(data)).convert("RGBA").resize((size, size), Image.LANCZOS)
         mask = Image.new("L", (size, size), 0)
         ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
-        out  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         out.paste(av, mask=mask)
         _avatar_cache[key] = out
         return out
@@ -297,38 +292,43 @@ async def _fetch_avatar(url: Optional[str], size: int) -> Optional[Image.Image]:
 
 
 # ---------------------------------------------------------------------------
-# **ENCODAGE GIF AMÉLIORÉ**
+# Encodage
 # ---------------------------------------------------------------------------
-
-def _encode_gif(frames: list[Image.Image], duration: int) -> io.BytesIO:
-    """Version améliorée : meilleure qualité visuelle"""
+def _encode_image(frames: list[Image.Image], duration: int) -> io.BytesIO:
     processed = []
-
     for frame in frames:
-        # Conversion + netteté pour compenser la compression GIF
         img = frame.convert("RGB")
-        img = img.filter(ImageFilter.SHARPEN)        # ← très important
-        img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
-
-        # Meilleure quantification
-        quantized = img.quantize(
-            colors=256,                              # 256 au lieu de 128
-            method=Image.Quantize.MEDIANCUT,         # meilleur pour les néons et textes
-            dither=Image.Dither.FLOYDSTEINBERG       # dithering de qualité
-        )
-        processed.append(quantized)
+        img = img.filter(ImageFilter.SHARPEN)
+        img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=2))
+        processed.append(img)
 
     buf = io.BytesIO()
-    processed[0].save(
-        buf,
-        format="GIF",
-        save_all=True,
-        append_images=processed[1:],
-        duration=duration,
-        loop=0,
-        optimize=True,
-        disposal=2,                     # important pour animation fluide
-    )
+    if USE_WEBP:
+        processed[0].save(
+            buf,
+            format="WEBP",
+            save_all=True,
+            append_images=processed[1:],
+            duration=duration,
+            loop=0,
+            quality=WEBP_QUALITY,
+            method=6,
+        )
+    else:
+        quantized = [
+            f.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
+            for f in processed
+        ]
+        quantized[0].save(
+            buf,
+            format="GIF",
+            save_all=True,
+            append_images=quantized[1:],
+            duration=duration,
+            loop=0,
+            optimize=True,
+            disposal=2,
+        )
     buf.seek(0)
     return buf
 
@@ -336,7 +336,6 @@ def _encode_gif(frames: list[Image.Image], duration: int) -> io.BytesIO:
 # ---------------------------------------------------------------------------
 # Construction des cartes
 # ---------------------------------------------------------------------------
-
 def _build_xp_card_sync(
     name: str,
     avatar: Optional[Image.Image],
@@ -345,16 +344,15 @@ def _build_xp_card_sync(
     xp_required: int,
     xp_total: int,
 ) -> tuple[list[Image.Image], int]:
-
     W, H = 620, 200
     frames, duration = _get_frames_copy(W, H, MAX_FRAMES_CARD)
 
-    font_name  = _load_font(34)
+    font_name = _load_font(34)
     font_level = _load_noto(20)
     font_small = _load_noto(15)
 
     name_clean = _sanitize_text(name, 24)
-    ratio      = xp_progress / xp_required if xp_required > 0 else 1.0
+    ratio = xp_progress / xp_required if xp_required > 0 else 1.0
 
     static_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ImageDraw.Draw(static_ov).rounded_rectangle((150, 15, 600, 185), radius=16, fill=OVERLAY)
@@ -365,22 +363,19 @@ def _build_xp_card_sync(
         ImageDraw.Draw(halo).ellipse((11, 36, 151, 176), fill=(0, 200, 255, 90))
 
     output: list[Image.Image] = []
-
     for frame in frames:
         frame.alpha_composite(static_ov)
-
         if avatar and halo:
             frame.alpha_composite(halo)
             frame.paste(avatar, (15, 40), avatar)
 
         draw = ImageDraw.Draw(frame)
-        _draw_shadow_text(draw, (163, 25),  name_clean,                          font_name,  WHITE)
-        _draw_shadow_text(draw, (163, 72),  f"NIVEAU {level}",                   font_level, NEON)
-        _draw_shadow_text(draw, (420, 74),  f"{xp_progress}/{xp_required} XP",   font_small, GREY)
+        _draw_shadow_text(draw, (163, 25), name_clean, font_name, WHITE)
+        _draw_shadow_text(draw, (163, 72), f"NIVEAU {level}", font_level, NEON)
+        _draw_shadow_text(draw, (420, 74), f"{xp_progress}/{xp_required} XP", font_small, GREY)
         _draw_xp_bar(draw, 163, 112, 425, 18, ratio)
-        _draw_shadow_text(draw, (163 + 212 - 15, 114), f"{int(ratio * 100)}%",   font_small, WHITE)
-        _draw_shadow_text(draw, (163, 145), f"Total : {xp_total} XP",            font_small, GREY)
-
+        _draw_shadow_text(draw, (163 + 197, 114), f"{int(ratio * 100)}%", font_small, WHITE)
+        _draw_shadow_text(draw, (163, 145), f"Total : {xp_total} XP", font_small, GREY)
         output.append(frame)
 
     return output, duration
@@ -394,23 +389,21 @@ def _build_levelup_sync(
     xp_progress: int,
     xp_required: int,
 ) -> tuple[list[Image.Image], int]:
-
     W, H = 620, 180
     frames, duration = _get_frames_copy(W, H, MAX_FRAMES_CARD)
 
     font_title = _load_font(34)
-    font_name  = _load_noto(22)
-    font_rank  = _load_noto(18)
+    font_name = _load_noto(22)
+    font_rank = _load_noto(18)
     font_small = _load_noto(14)
 
     name_clean = _sanitize_text(name, 24)
-    n          = len(frames)
+    n = len(frames)
 
     static_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     ImageDraw.Draw(static_ov).rounded_rectangle((145, 12, 603, 168), radius=16, fill=OVERLAY)
 
     output: list[Image.Image] = []
-
     for idx, frame in enumerate(frames):
         frame.alpha_composite(static_ov)
         anim = idx / max(n - 1, 1)
@@ -423,13 +416,12 @@ def _build_levelup_sync(
             frame.paste(avatar, (22, 40), avatar)
 
         draw = ImageDraw.Draw(frame)
-        _draw_shadow_text(draw, (158, 18), "LEVEL UP !",                       font_title, NEON)
-        _draw_shadow_text(draw, (158, 66), name_clean,                         font_name,  WHITE)
-        _draw_shadow_text(draw, (158, 96), f"Rang {old_level} → {new_level}", font_rank,  GREY)
+        _draw_shadow_text(draw, (158, 18), "LEVEL UP !", font_title, NEON)
+        _draw_shadow_text(draw, (158, 66), name_clean, font_name, WHITE)
+        _draw_shadow_text(draw, (158, 96), f"Rang {old_level} → {new_level}", font_rank, GREY)
         ratio = (xp_progress / xp_required if xp_required > 0 else 1.0) * anim
         _draw_xp_bar(draw, 158, 128, 435, 14, ratio)
         _draw_shadow_text(draw, (158, 148), f"{xp_progress} / {xp_required}", font_small, GREY)
-
         output.append(frame)
 
     return output, duration
@@ -441,13 +433,12 @@ def _build_topxp_sync(
     avatars: list[Optional[Image.Image]],
     xp_to_level_fn: Callable[[int], int],
 ) -> tuple[list[Image.Image], int]:
-
     W, H = 620, 560
     frames, duration = _get_frames_copy(W, H, MAX_FRAMES_TOP)
 
     font_title = _load_font(26)
-    font_row   = _load_noto(17)
-    font_xp    = _load_noto(14)
+    font_row = _load_noto(17)
+    font_xp = _load_noto(14)
 
     guild_clean = _sanitize_text(guild_name, 36)
     rank_colors = [GOLD, SILVER, BRONZE]
@@ -467,19 +458,17 @@ def _build_topxp_sync(
         y += 46
 
     output: list[Image.Image] = []
-
     for frame in frames:
         frame.alpha_composite(static_ov)
         draw = ImageDraw.Draw(frame)
 
-        _draw_shadow_text(draw, (20, 18), f"CLASSEMENT  {guild_clean.upper()}", font_title, NEON)
+        _draw_shadow_text(draw, (20, 18), f"CLASSEMENT {guild_clean.upper()}", font_title, NEON)
         draw.line((20, 58, 600, 58), fill=(0, 200, 255, 100), width=1)
 
         y = 68
         for idx, entry in enumerate(entries[:10]):
-            ov = row_ovs[idx]
-            if ov is not None:
-                frame.alpha_composite(ov)
+            if row_ovs[idx] is not None:
+                frame.alpha_composite(row_ovs[idx])
 
             rank_color = rank_colors[idx] if idx < 3 else WHITE
             _draw_shadow_text(draw, (20, y + 6), f"#{idx + 1}", font_row, rank_color)
@@ -492,9 +481,9 @@ def _build_topxp_sync(
             _draw_shadow_text(draw, (102, y + 6), name_clean, font_row, WHITE)
 
             xp_val = int(entry.get("xp", 0) or 0)
-            lv     = xp_to_level_fn(xp_val)
-            _draw_shadow_text(draw, (390, y + 7), f"LVL {lv}",       font_xp, NEON, offset=2)
-            _draw_shadow_text(draw, (470, y + 7), f"{xp_val:,} XP",  font_xp, GREY, offset=2)
+            lv = xp_to_level_fn(xp_val)
+            _draw_shadow_text(draw, (390, y + 7), f"LVL {lv}", font_xp, NEON, offset=2)
+            _draw_shadow_text(draw, (470, y + 7), f"{xp_val:,} XP", font_xp, GREY, offset=2)
             y += 46
 
         output.append(frame)
@@ -503,9 +492,8 @@ def _build_topxp_sync(
 
 
 # ---------------------------------------------------------------------------
-# API publique (async)
+# API Publique
 # ---------------------------------------------------------------------------
-
 async def generate_xp_card(
     member_name: str,
     avatar_url: str,
@@ -514,14 +502,12 @@ async def generate_xp_card(
     xp_progress: int,
     xp_required: int,
 ) -> Optional[io.BytesIO]:
-    if not Image:  # Pillow disponible ?
-        return None
     avatar = await _fetch_avatar(avatar_url, 120)
     loop = asyncio.get_event_loop()
     frames, duration = await loop.run_in_executor(
         None, partial(_build_xp_card_sync, member_name, avatar, level, xp_progress, xp_required, xp_total)
     )
-    return await loop.run_in_executor(None, partial(_encode_gif, frames, duration))
+    return await loop.run_in_executor(None, partial(_encode_image, frames, duration))
 
 
 async def generate_levelup_card(
@@ -533,14 +519,12 @@ async def generate_levelup_card(
     xp_progress: int,
     xp_required: int,
 ) -> Optional[io.BytesIO]:
-    if not Image:
-        return None
     avatar = await _fetch_avatar(avatar_url, 100)
     loop = asyncio.get_event_loop()
     frames, duration = await loop.run_in_executor(
         None, partial(_build_levelup_sync, member_name, avatar, old_level, new_level, xp_progress, xp_required)
     )
-    return await loop.run_in_executor(None, partial(_encode_gif, frames, duration))
+    return await loop.run_in_executor(None, partial(_encode_image, frames, duration))
 
 
 async def generate_topxp_card(
@@ -548,32 +532,27 @@ async def generate_topxp_card(
     entries: list[dict],
     xp_to_level_fn: Callable[[int], int],
 ) -> Optional[io.BytesIO]:
-    if not Image:
-        return None
-    avatars = list(await asyncio.gather(*[
-        _fetch_avatar(e.get("avatar_url"), 30) for e in entries[:10]
-    ]))
+    avatars = list(await asyncio.gather(*[_fetch_avatar(e.get("avatar_url"), 30) for e in entries[:10]]))
     loop = asyncio.get_event_loop()
     frames, duration = await loop.run_in_executor(
         None, partial(_build_topxp_sync, guild_name, entries[:10], avatars, xp_to_level_fn)
     )
-    return await loop.run_in_executor(None, partial(_encode_gif, frames, duration))
+    return await loop.run_in_executor(None, partial(_encode_image, frames, duration))
 
 
 # ---------------------------------------------------------------------------
 # Warmup
 # ---------------------------------------------------------------------------
-
 def warmup_sync() -> None:
     _ensure_fonts()
     _load_raw_bg_gif()
-    for w, h, mf in (
+    for w, h, mf in [
         (620, 200, MAX_FRAMES_CARD),
         (620, 180, MAX_FRAMES_CARD),
         (620, 560, MAX_FRAMES_TOP),
-    ):
+    ]:
         _get_prepared_frames(w, h, mf)
-    logger.info("Warmup card_generator terminé.")
+    logger.info("Warmup card_generator terminé - Mode: %s", "WEBP" if USE_WEBP else "GIF")
 
 
 async def warmup() -> None:
