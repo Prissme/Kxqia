@@ -109,6 +109,9 @@ LEVEL_ROLES: dict[int, int] = {
     50: 1504564316827947069,
 }
 
+# Rôle exclusif au top 1 XP — mis à jour toutes les heures
+TOP1_XP_ROLE_ID = 1505229721825316915
+
 URL_REGEX = re.compile(r"(https?://[^\s]+|www\.[^\s]+)", re.IGNORECASE)
 DISCORD_INVITE_REGEX = re.compile(r"(?:https?://)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/\S+", re.IGNORECASE)
 ALLOWED_VIDEO_DOMAINS = ("youtube.com", "youtu.be", "tiktok.com")
@@ -186,6 +189,59 @@ async def reset_daily_xp():
         _daily_xp = defaultdict(lambda: defaultdict(int))
         _last_xp_reset = datetime.datetime.utcnow()
         logger.info("Reset quotidien des XP effectué.")
+
+async def update_top1_xp_role():
+    """Toutes les heures : attribue TOP1_XP_ROLE_ID au membre #1 XP
+    et le retire aux anciens détenteurs."""
+    await bot.wait_until_ready()
+    while True:
+        try:
+            for guild in bot.guilds:
+                role = guild.get_role(TOP1_XP_ROLE_ID)
+                if role is None:
+                    continue
+
+                top = db.get_top_xp(str(guild.id), limit=1)
+                if not top:
+                    continue
+
+                try:
+                    top1_user_id = int(top[0].get("user_id", 0))
+                except (ValueError, TypeError):
+                    continue
+                if not top1_user_id:
+                    continue
+
+                # Retire le rôle à tous les membres sauf le top 1
+                for member in guild.members:
+                    if role in member.roles and member.id != top1_user_id:
+                        try:
+                            await member.remove_roles(role, reason="Top 1 XP — rotation horaire")
+                            logger.info("Rôle Top 1 XP retiré à %s", member)
+                        except (discord.Forbidden, discord.HTTPException):
+                            pass
+
+                # Attribue le rôle au top 1 s'il ne l'a pas encore
+                top1_member = guild.get_member(top1_user_id)
+                if top1_member is None:
+                    try:
+                        top1_member = await guild.fetch_member(top1_user_id)
+                    except (discord.NotFound, discord.HTTPException):
+                        top1_member = None
+
+                if top1_member and role not in top1_member.roles:
+                    bot_member = guild.me
+                    if bot_member and role < bot_member.top_role and not role.managed:
+                        try:
+                            await top1_member.add_roles(role, reason="Top 1 XP — rotation horaire")
+                            logger.info("Rôle Top 1 XP attribué à %s", top1_member)
+                        except (discord.Forbidden, discord.HTTPException):
+                            pass
+
+        except Exception as exc:
+            logger.error("Erreur dans update_top1_xp_role: %s", exc)
+
+        await asyncio.sleep(3600)  # 1 heure
 
 
 def _xp_required_for_next_level(level: int) -> int:
@@ -840,6 +896,7 @@ async def on_ready():
     logger.info('%s est connecté!', bot.user)
 
     bot.loop.create_task(reset_daily_xp())
+    bot.loop.create_task(update_top1_xp_role())
 
     for guild in bot.guilds:
         missing = [
