@@ -1,12 +1,3 @@
-"""
-main.py — Version ultra-optimisée pour Prissme TV
-=========================================================
-- /topxp : Cache 5min + avatars uniquement pour top 3
-- Logs HTTP filtrés (plus de spam Koyeb)
-- Toutes les fonctionnalités originales conservées
-- Gestion des erreurs silencieuse
-"""
-
 import asyncio
 import datetime
 import io
@@ -27,7 +18,6 @@ from discord.ext import commands
 # --- Configuration du logging (filtre les requêtes HTTP bruyantes) ---
 class HTTPFilter(logging.Filter):
     def filter(self, record):
-        # Filtre les logs de requêtes HTTP de aiohttp/discord/supabase
         if "aiohttp" in record.name or "http" in record.name.lower():
             return False
         if "HTTP Request" in getattr(record, "message", ""):
@@ -36,9 +26,9 @@ class HTTPFilter(logging.Filter):
 
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
-    filters=[HTTPFilter()]  # Applique le filtre
+    format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
 )
+logging.getLogger().addFilter(HTTPFilter())
 logger = logging.getLogger(__name__)
 
 # --- Imports locaux ---
