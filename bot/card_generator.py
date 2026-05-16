@@ -25,7 +25,7 @@ MAX_XP_FRAMES = 18  # 18 frames pour /xp et LevelUp
 # ================================================================
 
 _ROOT = Path(__file__).parent.parent
-_BACKGROUND_TOPPXP_PATH = _ROOT / "BackgroundTopXP"  # Fichier statique pour /topxp
+_BACKGROUND_TOPPXP_PATH = _ROOT / "BackgroundTopXP.webp"  # Fichier statique pour /topxp
 _FONT_DIR = Path(os.getenv("FONT_CACHE_DIR", "/tmp/bot_fonts"))
 _FONT_DIR.mkdir(parents=True, exist_ok=True)
 
