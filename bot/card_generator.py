@@ -1,10 +1,9 @@
 """
-card_generator.py — Refonte 2026 v3.2 (TopXP ultra-optimisé)
+card_generator.py — Refonte 2026 v3.3 (Vitesse optimisée)
 =====================================================
-Optimisations TopXP (zéro perte de qualité) :
-  - Template statique pré-calculé une seule fois
-  - Moins d'objets temporaires
-  - Avatars pré-redimensionnés
+- !xp et LevelUp limités à 20 frames (au lieu de 37)
+- /topxp optimisé (1 frame + grille allégée)
+- Resize BICUBIC + template statique
 """
 
 import asyncio
@@ -21,9 +20,10 @@ from PIL import Image, ImageDraw, ImageFont, ImageSequence
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# CHEMINS & DIMENSIONS
-# ---------------------------------------------------------------------------
+# ========================= CONFIGURATION =========================
+MAX_XP_FRAMES = 20          # Change à 15 ou 25 si tu veux
+# ================================================================
+
 _ROOT = Path(__file__).parent.parent
 _BG_PATH = _ROOT / "GIFKxqia.webp"
 _FONT_DIR = Path(os.getenv("FONT_CACHE_DIR", "/tmp/bot_fonts"))
@@ -102,7 +102,7 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 
 # ---------------------------------------------------------------------------
-# FOND & TEMPLATES
+# FOND ANIMÉ
 # ---------------------------------------------------------------------------
 def _make_fallback_frames(w: int, h: int) -> List[Image.Image]:
     img = Image.new("RGBA", (w, h))
@@ -120,7 +120,9 @@ def _load_bg_frames(w: int, h: int, max_frames: Optional[int] = None) -> Tuple[L
     key = (w, h)
     if key in _bg_cache:
         frames, duration = _bg_cache[key]
-        return (frames[:max_frames] if max_frames else frames, duration)
+        if max_frames:
+            return frames[:max_frames], duration
+        return frames, duration
 
     if not _BG_PATH.exists():
         logger.warning("Fond animé introuvable → fallback")
@@ -132,16 +134,22 @@ def _load_bg_frames(w: int, h: int, max_frames: Optional[int] = None) -> Tuple[L
         src = Image.open(_BG_PATH)
         frames: List[Image.Image] = []
         duration = 80
-        for frame in ImageSequence.Iterator(src):
+        target = max_frames or 999
+
+        for i, frame in enumerate(ImageSequence.Iterator(src)):
+            if i >= target:
+                break
             dur = frame.info.get("duration", 80)
             if dur and dur > 0:
                 duration = int(dur)
-            resized = frame.convert("RGBA").resize((w, h), Image.LANCZOS)
+            # BICUBIC = beaucoup plus rapide
+            resized = frame.convert("RGBA").resize((w, h), Image.BICUBIC)
             frames.append(resized.copy())
 
         logger.info("Fond chargé : %s → %dx%d (%d frames)", _BG_PATH.name, w, h, len(frames))
         _bg_cache[key] = (frames, duration)
-        return (frames[:max_frames] if max_frames else frames, duration)
+        return frames, duration
+
     except Exception as exc:
         logger.warning("Erreur chargement fond → fallback : %s", exc)
         result = (_make_fallback_frames(w, h), 80)
@@ -149,34 +157,25 @@ def _load_bg_frames(w: int, h: int, max_frames: Optional[int] = None) -> Tuple[L
         return result
 
 
-def _get_templates(w: int, h: int, dark_alpha: int = 100) -> Tuple[List[Image.Image], int]:
-    key = (w, h)
-    if key in _template_cache:
-        return _template_cache[key]
-
-    bg_frames, duration = _load_bg_frames(w, h)
-    templates = [frame.copy().convert("RGBA") for frame in bg_frames]
-    for t in templates:
-        _dark_overlay(t, dark_alpha)
-    _template_cache[key] = (templates, duration)
-    return _template_cache[key]
-
-
+# ---------------------------------------------------------------------------
+# TEMPLATES & HELPERS
+# ---------------------------------------------------------------------------
 def _build_topxp_template() -> Image.Image:
     global _topxp_template
     if _topxp_template is not None:
         return _topxp_template.copy()
 
-    bg_frames, _ = _load_bg_frames(TOP_W, TOP_H, max_frames=1)
-    canvas = bg_frames[0].copy().convert("RGBA")
+    bg, _ = _load_bg_frames(TOP_W, TOP_H, max_frames=1)
+    canvas = bg[0].copy().convert("RGBA")
     _dark_overlay(canvas, 105)
 
+    # Grille plus légère et rapide
     grid = Image.new("RGBA", (TOP_W, TOP_H), (0, 0, 0, 0))
     dg = ImageDraw.Draw(grid)
-    for x in range(0, TOP_W, 40):
-        dg.line([(x, 0), (x, TOP_H)], fill=(255, 255, 255, 6))
-    for y in range(0, TOP_H, 40):
-        dg.line([(0, y), (TOP_W, y)], fill=(255, 255, 255, 6))
+    for x in range(0, TOP_W, 60):
+        dg.line([(x, 0), (x, TOP_H)], fill=(255, 255, 255, 5))
+    for y in range(0, TOP_H, 60):
+        dg.line([(0, y), (TOP_W, y)], fill=(255, 255, 255, 5))
     canvas.alpha_composite(grid)
 
     PAD = 14
@@ -194,9 +193,6 @@ def _build_topxp_template() -> Image.Image:
     return canvas.copy()
 
 
-# ---------------------------------------------------------------------------
-# HELPERS
-# ---------------------------------------------------------------------------
 def _dark_overlay(canvas: Image.Image, alpha: int = 110) -> None:
     canvas.alpha_composite(Image.new("RGBA", canvas.size, (0, 0, 0, alpha)))
 
@@ -215,17 +211,14 @@ def _glass_panel(canvas: Image.Image, x: int, y: int, w: int, h: int, r: int = 1
     canvas.alpha_composite(panel)
 
 
-def _draw_xp_bar(
-    canvas: Image.Image, x: int, y: int, w: int, h: int,
-    progress: float, pct_label: bool = True
-) -> None:
+# ---------------------------------------------------------------------------
+# DRAW FUNCTIONS
+# ---------------------------------------------------------------------------
+def _draw_xp_bar(canvas: Image.Image, x: int, y: int, w: int, h: int, progress: float, pct_label: bool = True) -> None:
     r = h // 2
     prog = max(0.0, min(1.0, progress))
     bg = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    bg.paste(
-        Image.new("RGBA", (w, h), (255, 255, 255, 22)),
-        (x, y), _rounded_rect_mask(w, h, r)
-    )
+    bg.paste(Image.new("RGBA", (w, h), (255, 255, 255, 22)), (x, y), _rounded_rect_mask(w, h, r))
     canvas.alpha_composite(bg)
 
     fill_w = max(r * 2, int(w * prog))
@@ -241,6 +234,7 @@ def _draw_xp_bar(
     filled.paste(bar, (x, y), _rounded_rect_mask(fill_w, h, r))
     canvas.alpha_composite(filled)
 
+    # Glow
     glow_r = h + 4
     gx = x + fill_w - glow_r // 2
     gy = y + h // 2 - glow_r // 2
@@ -263,9 +257,7 @@ def _draw_xp_bar(
         draw.text((tx, ty), pct_txt, font=f_pct, fill=TEXT_PRI)
 
 
-def _avatar_with_ring(
-    canvas: Image.Image, avatar: Optional[Image.Image], cx: int, cy: int, av_size: int
-) -> None:
+def _avatar_with_ring(canvas: Image.Image, avatar: Optional[Image.Image], cx: int, cy: int, av_size: int) -> None:
     ring_r = av_size // 2 + 3
     ring = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(ring)
@@ -292,10 +284,8 @@ def _level_badge(canvas: Image.Image, draw: ImageDraw.ImageDraw, x: int, y: int,
     tw = bbox[2] - bbox[0]
     bw, bh = tw + 22, 22
     badge = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ImageDraw.Draw(badge).rounded_rectangle(
-        (x, y, x + bw, y + bh), radius=bh // 2,
-        fill=(*NEON, 28), outline=(*NEON, 110), width=1
-    )
+    ImageDraw.Draw(badge).rounded_rectangle((x, y, x + bw, y + bh), radius=bh // 2,
+                                            fill=(*NEON, 28), outline=(*NEON, 110), width=1)
     canvas.alpha_composite(badge)
     draw.text((x + 11, y + 4), label, font=f, fill=NEON)
 
@@ -303,10 +293,8 @@ def _level_badge(canvas: Image.Image, draw: ImageDraw.ImageDraw, x: int, y: int,
 # ---------------------------------------------------------------------------
 # BUILD FRAMES
 # ---------------------------------------------------------------------------
-def _build_xp_frame(
-    template: Image.Image, name: str, avatar: Optional[Image.Image],
-    level: int, xp_progress: int, xp_required: int, xp_total: int
-) -> Image.Image:
+def _build_xp_frame(template: Image.Image, name: str, avatar: Optional[Image.Image],
+                    level: int, xp_progress: int, xp_required: int, xp_total: int) -> Image.Image:
     canvas = template.copy()
     PAD = 16
     _glass_panel(canvas, PAD, PAD, XP_W - PAD * 2, XP_H - PAD * 2, r=20)
@@ -342,10 +330,8 @@ def _build_xp_frame(
     return canvas
 
 
-def _build_levelup_frame(
-    template: Image.Image, name: str, avatar: Optional[Image.Image],
-    old_level: int, new_level: int, xp_progress: int, xp_required: int
-) -> Image.Image:
+def _build_levelup_frame(template: Image.Image, name: str, avatar: Optional[Image.Image],
+                         old_level: int, new_level: int, xp_progress: int, xp_required: int) -> Image.Image:
     canvas = template.copy()
     PAD = 16
     _glass_panel(canvas, PAD, PAD, LU_W - PAD * 2, LU_H - PAD * 2, r=20)
@@ -373,9 +359,7 @@ def _build_levelup_frame(
     return canvas
 
 
-def _build_topxp_frame(
-    template: Image.Image, entries: list, avatars: list, xp_to_level_fn: Callable
-) -> Image.Image:
+def _build_topxp_frame(template: Image.Image, entries: list, avatars: list, xp_to_level_fn: Callable) -> Image.Image:
     canvas = template.copy()
     draw = ImageDraw.Draw(canvas)
     PAD = 14
@@ -443,10 +427,8 @@ def _encode_output(frames: List[Image.Image], duration: int) -> io.BytesIO:
         frames[0].convert("RGB").save(buf, format="PNG", optimize=True, quality=95)
     else:
         rgba = [f.convert("RGBA") for f in frames]
-        rgba[0].save(
-            buf, format="GIF", save_all=True, append_images=rgba[1:],
-            loop=0, duration=duration, optimize=False, disposal=2
-        )
+        rgba[0].save(buf, format="GIF", save_all=True, append_images=rgba[1:],
+                     loop=0, duration=duration, optimize=False, disposal=2)
     buf.seek(0)
     return buf
 
@@ -456,7 +438,7 @@ def _encode_output(frames: List[Image.Image], duration: int) -> io.BytesIO:
 # ---------------------------------------------------------------------------
 def _build_xp_card_sync(name: str, avatar: Optional[Image.Image], level: int,
                         xp_progress: int, xp_required: int, xp_total: int) -> io.BytesIO:
-    templates, duration = _get_templates(XP_W, XP_H, 100)
+    templates, duration = _load_bg_frames(XP_W, XP_H, MAX_XP_FRAMES)
     return _encode_output(
         [_build_xp_frame(t, name, avatar, level, xp_progress, xp_required, xp_total) for t in templates],
         duration
@@ -465,7 +447,7 @@ def _build_xp_card_sync(name: str, avatar: Optional[Image.Image], level: int,
 
 def _build_levelup_sync(name: str, avatar: Optional[Image.Image], old_level: int, new_level: int,
                         xp_progress: int, xp_required: int) -> io.BytesIO:
-    templates, duration = _get_templates(LU_W, LU_H, 90)
+    templates, duration = _load_bg_frames(LU_W, LU_H, MAX_XP_FRAMES)
     return _encode_output(
         [_build_levelup_frame(t, name, avatar, old_level, new_level, xp_progress, xp_required) for t in templates],
         duration
@@ -481,7 +463,7 @@ def _build_topxp_sync(guild_name: str, entries: list, avatars: list, xp_to_level
 
 
 # ---------------------------------------------------------------------------
-# AVATAR
+# AVATAR FETCH
 # ---------------------------------------------------------------------------
 async def _fetch_avatar(url: Optional[str], size: int) -> Optional[Image.Image]:
     if not url:
@@ -502,8 +484,7 @@ async def _fetch_avatar(url: Optional[str], size: int) -> Optional[Image.Image]:
         out.paste(img, mask=mask)
         _avatar_cache[key] = out
         return out
-    except Exception as exc:
-        logger.warning("Avatar fetch failed: %s", exc)
+    except Exception:
         _avatar_cache[key] = None
         return None
 
@@ -511,10 +492,8 @@ async def _fetch_avatar(url: Optional[str], size: int) -> Optional[Image.Image]:
 # ---------------------------------------------------------------------------
 # API PUBLIQUE
 # ---------------------------------------------------------------------------
-async def generate_xp_card(
-    member_name: str, avatar_url: str, level: int,
-    xp_total: int, xp_progress: int, xp_required: int
-) -> Tuple[io.BytesIO, str]:
+async def generate_xp_card(member_name: str, avatar_url: str, level: int,
+                           xp_total: int, xp_progress: int, xp_required: int) -> Tuple[io.BytesIO, str]:
     avatar = await _fetch_avatar(avatar_url, 100)
     loop = asyncio.get_event_loop()
     buf = await loop.run_in_executor(
@@ -523,10 +502,8 @@ async def generate_xp_card(
     return buf, "xp_card.gif"
 
 
-async def generate_levelup_card(
-    member_name: str, avatar_url: str, old_level: int, new_level: int,
-    xp_total: int, xp_progress: int, xp_required: int
-) -> Tuple[io.BytesIO, str]:
+async def generate_levelup_card(member_name: str, avatar_url: str, old_level: int, new_level: int,
+                                xp_total: int, xp_progress: int, xp_required: int) -> Tuple[io.BytesIO, str]:
     avatar = await _fetch_avatar(avatar_url, 100)
     loop = asyncio.get_event_loop()
     buf = await loop.run_in_executor(
@@ -535,9 +512,7 @@ async def generate_levelup_card(
     return buf, "levelup.gif"
 
 
-async def generate_topxp_card(
-    guild_name: str, entries: list, xp_to_level_fn: Callable[[int], int]
-) -> Tuple[io.BytesIO, str]:
+async def generate_topxp_card(guild_name: str, entries: list, xp_to_level_fn: Callable[[int], int]) -> Tuple[io.BytesIO, str]:
     avatars = list(await asyncio.gather(*[
         _fetch_avatar(e.get("avatar_url"), 32) for e in entries[:10]
     ]))
@@ -557,11 +532,11 @@ def warmup_sync() -> None:
         _font(size, False)
         _font(size, True)
 
-    _get_templates(XP_W, XP_H)
-    _get_templates(LU_W, LU_H)
+    _load_bg_frames(XP_W, XP_H, MAX_XP_FRAMES)
+    _load_bg_frames(LU_W, LU_H, MAX_XP_FRAMES)
     _build_topxp_template()
 
-    logger.info("Warmup card_generator v3.2 terminé — TopXP optimisé")
+    logger.info(f"Warmup v3.3 terminé — Max {MAX_XP_FRAMES} frames pour XP")
 
 
 async def warmup() -> None:
