@@ -379,7 +379,9 @@ async def _handle_level_up(
     granted_role = await _sync_level_roles_hardcoded(member, new_level)
 
     xp_progress, xp_required = _xp_in_current_level(new_xp)
-    card_buf = await generate_levelup_card(
+
+    # FIX #2 — generate_levelup_card retourne (buf, fname)
+    card_buf, fname = await generate_levelup_card(
         member_name=member.display_name,
         avatar_url=str(member.display_avatar.url),
         old_level=old_level,
@@ -396,8 +398,8 @@ async def _handle_level_up(
     embed = discord.Embed(title="🆙 Level Up !", description=description, color=0x5865F2)
 
     if card_buf:
-        # ← GIF animé : fichier .gif envoyé directement, PAS via embed.set_image()
-        file = discord.File(card_buf, filename="levelup.gif")
+        embed.set_image(url=f"attachment://{fname}")          # FIX #2
+        file = discord.File(card_buf, filename=fname)
         await channel.send(embed=embed, file=file)
     else:
         await channel.send(embed=embed)
@@ -841,7 +843,8 @@ async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Memb
     level    = _xp_to_level(xp_value)
     progress, required = _xp_in_current_level(xp_value)
 
-    card_buf = await generate_xp_card(
+    # FIX #2 — generate_xp_card retourne (buf, fname)
+    card_buf, fname = await generate_xp_card(
         member_name=target.display_name,
         avatar_url=str(target.display_avatar.url),
         level=level,
@@ -852,8 +855,8 @@ async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Memb
 
     embed = discord.Embed(title=f'XP de {target.display_name}', color=0x5865F2)
     if card_buf:
-        # ← GIF animé : pas de set_image()
-        file = discord.File(card_buf, filename="xp_card.gif")
+        embed.set_image(url=f"attachment://{fname}")          # FIX #2
+        file = discord.File(card_buf, filename=fname)
         await ctx.send(embed=embed, file=file)
     else:
         progress_text = (
@@ -1022,7 +1025,8 @@ async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Me
     level    = _xp_to_level(xp_value)
     progress, required = _xp_in_current_level(xp_value)
 
-    card_buf = await generate_xp_card(
+    # FIX #2 — generate_xp_card retourne (buf, fname)
+    card_buf, fname = await generate_xp_card(
         member_name=target.display_name,
         avatar_url=str(target.display_avatar.url),
         level=level,
@@ -1033,8 +1037,8 @@ async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Me
 
     embed = discord.Embed(title=f'XP de {target.display_name}', color=0x5865F2)
     if card_buf:
-        # ← GIF animé : pas de set_image()
-        file = discord.File(card_buf, filename="xp_card.gif")
+        embed.set_image(url=f"attachment://{fname}")          # FIX #2
+        file = discord.File(card_buf, filename=fname)
         await interaction.followup.send(embed=embed, file=file)
     else:
         progress_text = (
@@ -1073,16 +1077,18 @@ async def topxp_slash(interaction: discord.Interaction):
             "avatar_url":  str(member.display_avatar.url) if member else None,
         })
 
-    card_buf = await generate_topxp_card(
+    # FIX #2 — generate_topxp_card retourne (buf, fname)
+    card_buf, fname = await generate_topxp_card(
         guild_name=interaction.guild.name,
         entries=enriched,
         xp_to_level_fn=_xp_to_level,
     )
 
     if card_buf:
-        # ← GIF animé : envoyé directement sans embed
-        file = discord.File(card_buf, filename="topxp.gif")
-        await interaction.followup.send(file=file)
+        embed = discord.Embed(title="🏆 Top XP", color=0x5865F2)
+        embed.set_image(url=f"attachment://{fname}")          # FIX #2
+        file = discord.File(card_buf, filename=fname)
+        await interaction.followup.send(embed=embed, file=file)
     else:
         lines = []
         for idx, entry in enumerate(enriched, start=1):
