@@ -42,7 +42,7 @@ intents.message_content = True
 intents.guilds = True
 intents.members = True
 intents.messages = True
-intents.reactions = True   # ← nécessaire pour on_reaction_add
+intents.reactions = True
 
 bot = commands.Bot(command_prefix=commands.when_mentioned_or('!', 'e!'), intents=intents, help_command=None)
 bot.trap_words: dict[int, str] = {}
@@ -72,7 +72,7 @@ ROLE_SELECT_VALUES = {
 }
 
 # ---------------------------------------------------------------------------
-# Rôles de niveau hardcodés
+# Rôles de niveau hardcodés  (palier → role_id)
 # ---------------------------------------------------------------------------
 
 LEVEL_ROLES: dict[int, int] = {
@@ -90,23 +90,80 @@ LEVEL_ROLES: dict[int, int] = {
 # ---------------------------------------------------------------------------
 
 XP_PER_MESSAGE        = 5
-XP_PER_REACTION       = 3    # XP accordé à l'auteur du message quand il reçoit une réaction
-XP_COOLDOWN_SECONDS   = 30   # cooldown messages
-XP_REACT_COOLDOWN_SEC = 60   # cooldown par (réacteur, auteur) pour éviter le spam
+XP_PER_REACTION       = 3
+XP_COOLDOWN_SECONDS   = 30
+XP_REACT_COOLDOWN_SEC = 60
 MAX_LEVEL             = 99
 XP_BASE_BY_LEVEL      = 100
 XP_GROWTH_FACTOR      = 1.12
 
-# Cooldowns en mémoire
 _xp_last_gain_at: dict[tuple[int, int], datetime.datetime] = {}
-# Clé : (guild_id, reactor_id, author_id) → dernière réaction comptée
 _xp_react_cooldown: dict[tuple[int, int, int], datetime.datetime] = {}
 
 # ---------------------------------------------------------------------------
-# Réactions — compteurs en mémoire (persistés dans Supabase via db)
+# Réactions — compteurs persistés dans Supabase
+# Table attendue : reaction_counts (guild_id text, user_id text, count int)
+# clé primaire : (guild_id, user_id)
 # ---------------------------------------------------------------------------
-# Structure : {guild_id: {user_id: count}}
-_reaction_received: dict[int, dict[int, int]] = {}
+
+def _get_reaction_count(guild_id: int, user_id: int) -> int:
+    client = db._ensure_client()
+    if not client:
+        return 0
+    try:
+        resp = (
+            client.table("reaction_counts")
+            .select("count")
+            .eq("guild_id", str(guild_id))
+            .eq("user_id", str(user_id))
+            .limit(1)
+            .execute()
+        )
+        if resp.data:
+            return int(resp.data[0].get("count") or 0)
+        return 0
+    except Exception as exc:
+        logger.error("_get_reaction_count: %s", exc)
+        return 0
+
+
+def _increment_reaction_count(guild_id: int, user_id: int, user_name: str) -> None:
+    client = db._ensure_client()
+    if not client:
+        return
+    try:
+        current = _get_reaction_count(guild_id, user_id)
+        client.table("reaction_counts").upsert(
+            {
+                "guild_id": str(guild_id),
+                "user_id": str(user_id),
+                "user_name": user_name,
+                "count": current + 1,
+            },
+            on_conflict="guild_id,user_id",
+        ).execute()
+    except Exception as exc:
+        logger.error("_increment_reaction_count: %s", exc)
+
+
+def _get_top_reactions(guild_id: int, limit: int = 10) -> list[dict]:
+    client = db._ensure_client()
+    if not client:
+        return []
+    try:
+        resp = (
+            client.table("reaction_counts")
+            .select("user_id,user_name,count")
+            .eq("guild_id", str(guild_id))
+            .order("count", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return resp.data or []
+    except Exception as exc:
+        logger.error("_get_top_reactions: %s", exc)
+        return []
+
 
 _background_tasks_started = False
 _role_view_added           = False
@@ -147,7 +204,6 @@ def _extract_blocked_links(content: str) -> list[str]:
 
 start_time = datetime.datetime.utcnow()
 
-# Init DB + managers
 db.init_db()
 config = db.load_config()
 
@@ -228,7 +284,7 @@ def _build_progress_bar(progress: int, required: int, size: int = 12) -> str:
 
 
 # ---------------------------------------------------------------------------
-# XP — rôles de niveau hardcodés
+# XP — rôles hardcodés
 # ---------------------------------------------------------------------------
 
 def _get_level_role_for_level(level: int) -> Optional[int]:
@@ -245,8 +301,8 @@ async def _sync_level_roles_hardcoded(member: discord.Member, new_level: int) ->
     if bot_member is None:
         return None
 
-    target_role_id  = _get_level_role_for_level(new_level)
-    granted_role    = None
+    target_role_id = _get_level_role_for_level(new_level)
+    granted_role   = None
 
     roles_to_remove = [
         guild.get_role(role_id)
@@ -313,12 +369,6 @@ async def _grant_message_xp(message: discord.Message) -> None:
 # ---------------------------------------------------------------------------
 
 async def _grant_reaction_xp(reaction: discord.Reaction, reactor: discord.Member) -> None:
-    """
-    Accorde de l'XP à l'auteur du message lorsqu'il reçoit une réaction.
-    - Le bot ne compte pas.
-    - L'auteur ne peut pas se réacter à lui-même.
-    - Cooldown par (guild, reactor, auteur) pour éviter le spam.
-    """
     message = reaction.message
     if message.guild is None:
         return
@@ -338,11 +388,13 @@ async def _grant_reaction_xp(reaction: discord.Reaction, reactor: discord.Member
         return
     _xp_react_cooldown[ck] = now
 
-    # Incrémenter le compteur de réactions reçues (en mémoire)
-    _reaction_received.setdefault(guild_id, {})
-    _reaction_received[guild_id][author.id] = _reaction_received[guild_id].get(author.id, 0) + 1
+    # Persister le compteur de réactions reçues dans Supabase
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: _increment_reaction_count(guild_id, author.id, str(author)),
+    )
 
-    # Accorder l'XP à l'auteur
     guild_id_str = str(guild_id)
     user_id_str  = str(author.id)
     current      = db.get_user_xp(guild_id_str, user_id_str)
@@ -372,15 +424,12 @@ async def _handle_level_up(
     new_level: int,
     new_xp: int,
 ) -> None:
-    """Envoie la carte level-up et synchronise les rôles."""
     if not isinstance(member, discord.Member):
         return
 
     granted_role = await _sync_level_roles_hardcoded(member, new_level)
-
     xp_progress, xp_required = _xp_in_current_level(new_xp)
 
-    # FIX #2 — generate_levelup_card retourne (buf, fname)
     card_buf, fname = await generate_levelup_card(
         member_name=member.display_name,
         avatar_url=str(member.display_avatar.url),
@@ -398,7 +447,7 @@ async def _handle_level_up(
     embed = discord.Embed(title="🆙 Level Up !", description=description, color=0x5865F2)
 
     if card_buf:
-        embed.set_image(url=f"attachment://{fname}")          # FIX #2
+        embed.set_image(url=f"attachment://{fname}")
         file = discord.File(card_buf, filename=fname)
         await channel.send(embed=embed, file=file)
     else:
@@ -660,13 +709,12 @@ async def on_message(message: discord.Message):
     if guild is None:
         return
 
-    # Modération automatique des liens / mots blacklistés
     if isinstance(message.author, discord.Member) and not _is_privileged_member(message.author):
-        lowered_content       = message.content.lower()
-        blocked_links         = _extract_blocked_links(message.content)
-        contains_invite       = bool(DISCORD_INVITE_REGEX.search(lowered_content))
-        blacklist_words       = bot.blacklist_words.get(guild.id, set())
-        contains_blacklisted  = any(word in lowered_content for word in blacklist_words)
+        lowered_content      = message.content.lower()
+        blocked_links        = _extract_blocked_links(message.content)
+        contains_invite      = bool(DISCORD_INVITE_REGEX.search(lowered_content))
+        blacklist_words      = bot.blacklist_words.get(guild.id, set())
+        contains_blacklisted = any(word in lowered_content for word in blacklist_words)
 
         if blocked_links or contains_invite or contains_blacklisted:
             try:
@@ -705,7 +753,6 @@ async def on_message(message: discord.Message):
     })
     slow_mode_manager.handle_message(message)
 
-    # Trap word
     trap_word = bot.trap_words.get(guild.id)
     if trap_word and trap_word in message.content.lower():
         bot.trap_words.pop(guild.id, None)
@@ -724,9 +771,7 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_reaction_add(reaction: discord.Reaction, user: discord.User | discord.Member):
-    """Accorde de l'XP à l'auteur du message quand il reçoit une réaction."""
     if isinstance(user, discord.User):
-        # Résoudre en Member pour avoir les permissions
         if reaction.message.guild is None:
             return
         try:
@@ -830,9 +875,43 @@ async def blacklist_cmd(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+@bot.command(name='rewards')
+async def rewards_cmd(ctx: commands.Context):
+    """Affiche tous les rôles de récompense XP et leur palier de niveau."""
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+
+    lines = []
+    for level_threshold in sorted(LEVEL_ROLES.keys()):
+        role_id  = LEVEL_ROLES[level_threshold]
+        role_obj = ctx.guild.get_role(role_id)
+        if role_obj:
+            lines.append(f"**Niveau {level_threshold}** → {role_obj.mention}")
+        else:
+            lines.append(f"**Niveau {level_threshold}** → <rôle introuvable ID {role_id}>")
+
+    embed = discord.Embed(
+        title="🏆 Récompenses de niveau XP",
+        description="\n".join(lines),
+        color=0x5865F2,
+    )
+    embed.set_footer(
+        text=(
+            f"Gagne de l'XP en envoyant des messages (+{XP_PER_MESSAGE} XP/msg, "
+            f"cooldown {XP_COOLDOWN_SECONDS}s) et en recevant des réactions "
+            f"(+{XP_PER_REACTION} XP/réaction)."
+        )
+    )
+    if ctx.guild.icon:
+        embed.set_thumbnail(url=ctx.guild.icon.url)
+
+    await ctx.send(embed=embed)
+
+
 @bot.command(name='xp')
 async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Member] = None):
-    """Affiche la carte XP d'un membre."""
+    """Affiche la carte XP d'un membre (image seule, sans embed)."""
     if ctx.guild is None:
         await ctx.send('Cette commande doit être utilisée sur un serveur.')
         return
@@ -843,7 +922,6 @@ async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Memb
     level    = _xp_to_level(xp_value)
     progress, required = _xp_in_current_level(xp_value)
 
-    # FIX #2 — generate_xp_card retourne (buf, fname)
     card_buf, fname = await generate_xp_card(
         member_name=target.display_name,
         avatar_url=str(target.display_avatar.url),
@@ -853,58 +931,48 @@ async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Memb
         xp_required=required,
     )
 
-    embed = discord.Embed(title=f'XP de {target.display_name}', color=0x5865F2)
     if card_buf:
-        embed.set_image(url=f"attachment://{fname}")          # FIX #2
-        file = discord.File(card_buf, filename=fname)
-        await ctx.send(embed=embed, file=file)
+        # Image seule, pas d'embed
+        await ctx.send(file=discord.File(card_buf, filename=fname))
     else:
-        progress_text = (
-            'Niveau max atteint (99)' if level >= MAX_LEVEL
-            else f'{progress}/{required} XP vers le niveau {level + 1}'
-        )
+        # Fallback texte si la génération échoue
         progress_bar = _build_progress_bar(1, 1) if level >= MAX_LEVEL else _build_progress_bar(progress, required)
-        embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name='Niveau',      value=str(level),                  inline=True)
-        embed.add_field(name='XP total',    value=f'{xp_value}/{MAX_XP}',      inline=True)
-        embed.add_field(name='Progression', value=progress_text,               inline=False)
-        embed.add_field(name='Barre',       value=progress_bar,                inline=False)
-        await ctx.send(embed=embed)
+        await ctx.send(
+            f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n{progress_bar}"
+        )
 
 
 @bot.command(name='reactlb')
 async def reactlb(ctx: commands.Context):
-    """
-    Affiche le classement des membres qui ont reçu le plus de réactions
-    depuis le dernier démarrage du bot.
-    (Les compteurs sont en mémoire ; ils se remettent à zéro au redémarrage.)
-    """
+    """Classement des membres qui ont reçu le plus de réactions (persisté)."""
     if ctx.guild is None:
         await ctx.send('Cette commande doit être utilisée sur un serveur.')
         return
 
-    guild_counts = _reaction_received.get(ctx.guild.id, {})
-    if not guild_counts:
-        await ctx.send("Aucune réaction enregistrée depuis le démarrage du bot.")
-        return
+    loop = asyncio.get_event_loop()
+    entries = await loop.run_in_executor(None, lambda: _get_top_reactions(ctx.guild.id))
 
-    # Trier par nombre de réactions reçues
-    sorted_entries = sorted(guild_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    if not entries:
+        await ctx.send("Aucune réaction enregistrée pour le moment.")
+        return
 
     medals = ["🥇", "🥈", "🥉"]
     lines  = []
-    for idx, (user_id, count) in enumerate(sorted_entries):
-        member = ctx.guild.get_member(user_id)
-        name   = member.display_name if member else f"ID {user_id}"
-        prefix = medals[idx] if idx < 3 else f"**{idx + 1}.**"
-        lines.append(f"{prefix} {name} — **{count}** réaction{'s' if count > 1 else ''} reçue{'s' if count > 1 else ''}")
+    for idx, row in enumerate(entries):
+        user_id = row.get("user_id")
+        count   = int(row.get("count") or 0)
+        member  = ctx.guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
+        name    = member.display_name if member else (row.get("user_name") or f"ID {user_id}")
+        prefix  = medals[idx] if idx < 3 else f"**{idx + 1}.**"
+        s       = "s" if count > 1 else ""
+        lines.append(f"{prefix} {name} — **{count}** réaction{s} reçue{s}")
 
     embed = discord.Embed(
         title="💬 Classement des réactions reçues",
         description="\n".join(lines),
         color=0x5865F2,
     )
-    embed.set_footer(text="Compteur réinitialisé à chaque redémarrage du bot.")
+    embed.set_footer(text="Données persistées — le compteur ne se remet pas à zéro au redémarrage.")
     await ctx.send(embed=embed)
 
 
@@ -952,7 +1020,8 @@ async def help_user(interaction: discord.Interaction):
         value=(
             "`/xp [membre]` — Voir son niveau et son XP\n"
             "`/topxp` — Voir le classement XP du serveur\n"
-            "`!xp [membre]` — Alias préfixe\n"
+            "`!xp [membre]` — Alias préfixe (image seule)\n"
+            "`!rewards` — Voir tous les rôles de récompense XP\n"
             "`!reactlb` — Classement des réactions reçues"
         ),
         inline=False,
@@ -1010,7 +1079,7 @@ async def help_admin(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name='xp', description='Affiche votre niveau et votre XP (ou celui d\'un autre membre)')
+@bot.tree.command(name='xp', description='Affiche votre niveau et votre XP (image seule)')
 @app_commands.describe(membre='Membre dont vous voulez voir le profil XP')
 async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Member] = None):
     if interaction.guild is None:
@@ -1025,7 +1094,6 @@ async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Me
     level    = _xp_to_level(xp_value)
     progress, required = _xp_in_current_level(xp_value)
 
-    # FIX #2 — generate_xp_card retourne (buf, fname)
     card_buf, fname = await generate_xp_card(
         member_name=target.display_name,
         avatar_url=str(target.display_avatar.url),
@@ -1035,23 +1103,14 @@ async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Me
         xp_required=required,
     )
 
-    embed = discord.Embed(title=f'XP de {target.display_name}', color=0x5865F2)
     if card_buf:
-        embed.set_image(url=f"attachment://{fname}")          # FIX #2
-        file = discord.File(card_buf, filename=fname)
-        await interaction.followup.send(embed=embed, file=file)
+        # Image seule, pas d'embed
+        await interaction.followup.send(file=discord.File(card_buf, filename=fname))
     else:
-        progress_text = (
-            'Niveau max atteint (99)' if level >= MAX_LEVEL
-            else f'{progress}/{required} XP vers le niveau {level + 1}'
-        )
         progress_bar = _build_progress_bar(1, 1) if level >= MAX_LEVEL else _build_progress_bar(progress, required)
-        embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name='Niveau',      value=str(level),             inline=True)
-        embed.add_field(name='XP total',    value=f'{xp_value}/{MAX_XP}', inline=True)
-        embed.add_field(name='Progression', value=progress_text,          inline=False)
-        embed.add_field(name='Barre',       value=progress_bar,           inline=False)
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(
+            f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n{progress_bar}"
+        )
 
 
 @bot.tree.command(name='topxp', description='Affiche le classement XP du serveur')
@@ -1062,22 +1121,26 @@ async def topxp_slash(interaction: discord.Interaction):
 
     await interaction.response.defer()
 
+    # 1) Récupérer les données XP (Supabase, rapide)
     top_entries = db.get_top_xp(str(interaction.guild.id), limit=10)
     if not top_entries:
         await interaction.followup.send('Aucune XP enregistrée pour le moment.')
         return
 
+    # 2) Enrichir les entrées avec noms affichés — sans fetch réseau pour chaque membre
+    #    On utilise le cache du guild; si absent, on prend user_name de Supabase
     enriched = []
     for entry in top_entries:
         user_id = entry.get('user_id')
         member  = interaction.guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
         enriched.append({
             **entry,
-            "user_name":   member.display_name if member else (entry.get('user_name') or f'ID {user_id}'),
-            "avatar_url":  str(member.display_avatar.url) if member else None,
+            "user_name":  member.display_name if member else (entry.get('user_name') or f'ID {user_id}'),
+            # On ne fetch pas les avatars ici — génération sans avatars = 10× plus rapide
+            "avatar_url": str(member.display_avatar.url) if member else None,
         })
 
-    # FIX #2 — generate_topxp_card retourne (buf, fname)
+    # 3) Générer la carte — les avatars sont fetchés en parallèle dans generate_topxp_card
     card_buf, fname = await generate_topxp_card(
         guild_name=interaction.guild.name,
         entries=enriched,
@@ -1085,16 +1148,14 @@ async def topxp_slash(interaction: discord.Interaction):
     )
 
     if card_buf:
-        embed = discord.Embed(title="🏆 Top XP", color=0x5865F2)
-        embed.set_image(url=f"attachment://{fname}")          # FIX #2
-        file = discord.File(card_buf, filename=fname)
-        await interaction.followup.send(embed=embed, file=file)
+        await interaction.followup.send(file=discord.File(card_buf, filename=fname))
     else:
+        # Fallback embed texte
         lines = []
         for idx, entry in enumerate(enriched, start=1):
             xp_value = int(entry.get('xp', 0) or 0)
             level    = _xp_to_level(xp_value)
-            lines.append(f'**{idx}.** {entry["user_name"]} — Niveau {level} ({xp_value} XP)')
+            lines.append(f'**{idx}.** {entry["user_name"]} — Niveau {level} ({xp_value:,} XP)')
         embed = discord.Embed(title='🏆 Top XP du serveur', description='\n'.join(lines), color=0x5865F2)
         await interaction.followup.send(embed=embed)
 
