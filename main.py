@@ -1,3 +1,12 @@
+"""
+main.py — Version finale pour Prissme TV
+=========================================
+- /topxp : Sans avatars (texte uniquement), cache 5min
+- Logs HTTP filtrés (plus de spam Koyeb)
+- Toutes les fonctionnalités originales conservées
+- Gestion des erreurs robuste
+"""
+
 import asyncio
 import datetime
 import io
@@ -15,10 +24,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# --- Configuration du logging (filtre les requêtes HTTP bruyantes) ---
+# --- Configuration du logging (sans spam HTTP) ---
 class HTTPFilter(logging.Filter):
     def filter(self, record):
-        if "aiohttp" in record.name or "http" in record.name.lower():
+        if "aiohttp" in record.name:
             return False
         if "HTTP Request" in getattr(record, "message", ""):
             return False
@@ -46,8 +55,7 @@ from bot.level_roles import sync_level_roles
 from bot.card_generator import generate_levelup_card, generate_topxp_card, generate_xp_card
 
 # --- Variables globales pour le cache ---
-_topxp_cache: Optional[Tuple[io.BytesIO, str]] = None
-_topxp_cache_time: datetime.datetime = datetime.datetime.min
+_topxp_cache: dict = {}  # {guild_id: (card_buf, fname, timestamp)}
 _topxp_data_cache: dict = {}  # {guild_id: (data, timestamp)}
 
 # --- Configuration Discord ---
@@ -296,12 +304,11 @@ async def _grant_reaction_xp(reaction: discord.Reaction, reactor: discord.Member
         return
     _xp_react_cooldown[ck] = now
 
-    # Increment reaction count in Supabase (silent)
     try:
         current = _get_reaction_count(guild_id, author.id)
         _increment_reaction_count(guild_id, author.id, str(author), current + 1)
     except Exception:
-        pass  # Silent fail for reaction counting
+        pass
 
     guild_id_str = str(guild_id)
     user_id_str = str(author.id)
@@ -352,18 +359,18 @@ async def _handle_level_up(
         embed = discord.Embed(title="🆙 Level Up !", description=description, color=0x5865F2)
 
         if card_buf:
+            card_buf.seek(0)  # Réinitialise le pointeur
             embed.set_image(url=f"attachment://{fname}")
             await channel.send(embed=embed, file=discord.File(card_buf, filename=fname))
         else:
             await channel.send(embed=embed)
     except Exception:
-        # Silent fail for level up cards
         try:
             await channel.send(f"🎉 {member.mention} vient de passer au **niveau {new_level}** !")
         except Exception:
             pass
 
-# --- Reaction Count Functions (Silent) ---
+# --- Reaction Count Functions ---
 def _get_reaction_count(guild_id: int, user_id: int) -> int:
     client = db._ensure_client()
     if not client:
@@ -596,15 +603,13 @@ async def collect_message_stats(guild: discord.Guild, cutoff: datetime.datetime)
             continue
     return len(authors), counter
 
-# --- Optimized /topxp with caching ---
+# --- Optimized /topxp WITHOUT avatars (text only) ---
 async def _get_cached_topxp_data(guild_id: int) -> Optional[list]:
     """Get top XP data with 5-minute cache"""
     now = datetime.datetime.utcnow()
     cached = _topxp_data_cache.get(guild_id)
     if cached and (now - cached[1]).total_seconds() < 300:  # 5 minutes
         return cached[0]
-
-    # Fetch fresh data
     try:
         data = db.get_top_xp(str(guild_id), limit=10)
         _topxp_data_cache[guild_id] = (data, now)
@@ -612,7 +617,7 @@ async def _get_cached_topxp_data(guild_id: int) -> Optional[list]:
     except Exception:
         return None
 
-@bot.tree.command(name='topxp', description='Affiche le classement XP du serveur')
+@bot.tree.command(name='topxp', description='Affiche le classement XP du serveur (texte uniquement)')
 async def topxp_slash(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message('Cette commande doit être utilisée sur un serveur.', ephemeral=True)
@@ -621,62 +626,62 @@ async def topxp_slash(interaction: discord.Interaction):
     await interaction.response.defer()
 
     try:
-        # 1. Get cached data
         guild_id = interaction.guild.id
         top_entries = await _get_cached_topxp_data(guild_id)
         if not top_entries:
             await interaction.followup.send('Aucune XP enregistrée pour le moment.')
             return
 
-        # 2. Check card cache
-        global _topxp_cache, _topxp_cache_time
+        # Check cache for this guild
+        cached = _topxp_cache.get(guild_id)
         now = datetime.datetime.utcnow()
-        if _topxp_cache and (now - _topxp_cache_time).total_seconds() < 300:  # 5 minutes
-            card_buf, fname = _topxp_cache
-            await interaction.followup.send(file=discord.File(card_buf, filename=fname))
+        if cached and (now - cached[2]).total_seconds() < 300:  # 5 minutes
+            cached_buf, fname, _ = cached
+            cached_buf.seek(0)  # Réinitialise le pointeur
+            await interaction.followup.send(file=discord.File(cached_buf, filename=fname))
             return
 
-        # 3. Prepare data - only fetch avatars for top 3
+        # Prepare data WITHOUT avatars (text only)
         enriched = []
-        for idx, entry in enumerate(top_entries):
+        for entry in top_entries:
             user_id = entry.get('user_id')
             member = interaction.guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
-
-            # Only fetch avatar for top 3
-            avatar_url = None
-            if idx < 3 and member:
-                avatar_url = str(member.display_avatar.url)
-
             enriched.append({
                 **entry,
                 "user_name": member.display_name if member else (entry.get('user_name') or f'ID {user_id}'),
-                "avatar_url": avatar_url,  # Only top 3 have avatars
+                "avatar_url": None,  # ❌ PAS D'AVATARS
             })
 
-        # 4. Generate card
+        # Generate card (will use fallback or BackgroundTopXP.webp)
         card_buf, fname = await generate_topxp_card(
             guild_name=interaction.guild.name,
             entries=enriched,
             xp_to_level_fn=_xp_to_level,
         )
 
-        # 5. Update cache
-        _topxp_cache = (card_buf, fname)
-        _topxp_cache_time = now
+        # Update cache for this guild
+        if card_buf:
+            card_buf.seek(0)  # Réinitialise le pointeur
+            _topxp_cache[guild_id] = (card_buf, fname, now)
 
         if card_buf:
             await interaction.followup.send(file=discord.File(card_buf, filename=fname))
         else:
-            # Fallback text
+            # Fallback: embed texte si la génération échoue
             lines = []
             for idx, entry in enumerate(enriched, start=1):
                 xp_value = int(entry.get('xp', 0) or 0)
                 level = _xp_to_level(xp_value)
                 lines.append(f'**{idx}.** {entry["user_name"]} — Niveau {level} ({xp_value:,} XP)')
-            embed = discord.Embed(title='🏆 Top XP du serveur', description='\n'.join(lines), color=0x5865F2)
+            embed = discord.Embed(
+                title='🏆 Top XP du serveur',
+                description='\n'.join(lines),
+                color=0x5865F2
+            )
             await interaction.followup.send(embed=embed)
 
-    except Exception:
+    except Exception as e:
+        logger.error(f"Erreur dans /topxp: {e}")
         await interaction.followup.send("Une erreur est survenue.", ephemeral=True)
 
 # --- Discord Events ---
@@ -947,6 +952,7 @@ async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Memb
             xp_required=required,
         )
         if card_buf:
+            card_buf.seek(0)
             await ctx.send(file=discord.File(card_buf, filename=fname))
         else:
             progress_bar = _build_progress_bar(1, 1) if level >= MAX_LEVEL else _build_progress_bar(progress, required)
@@ -1109,6 +1115,7 @@ async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Me
             xp_required=required,
         )
         if card_buf:
+            card_buf.seek(0)
             await interaction.followup.send(file=discord.File(card_buf, filename=fname))
         else:
             progress_bar = _build_progress_bar(1, 1) if level >= MAX_LEVEL else _build_progress_bar(progress, required)
@@ -1143,6 +1150,7 @@ async def levelup_slash(interaction: discord.Interaction, old_level: int = 1, ne
         )
 
         if card_buf:
+            card_buf.seek(0)
             await interaction.followup.send(file=discord.File(card_buf, filename=fname))
         else:
             await interaction.followup.send(f"Level Up de {old_level} à {new_level} !")
