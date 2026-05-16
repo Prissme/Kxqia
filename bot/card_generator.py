@@ -1,16 +1,16 @@
 """
-card_generator.py — Refonte 2026 v4 (Optimisé)
+card_generator.py — Refonte 2026 v4 (Corrigé)
 =====================================================
-- XP et LevelUp : 20 frames max (BICUBIC + template statique)
-- /topxp : PNG statique, fallback dégradé (pas de GIF chargé)
+- /xp et LevelUp : GIF animé avec 18 frames (BICUBIC)
+- /topxp : PNG statique avec BackgroundTopXP à la racine
 - Overlay ultra-sombre, contraste maximal
-- Cache optimisé pour les polices et avatars
 """
 
 import asyncio
 import io
 import logging
 import os
+import urllib.request
 from functools import partial
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -21,10 +21,11 @@ from PIL import Image, ImageDraw, ImageFont, ImageSequence
 logger = logging.getLogger(__name__)
 
 # ========================= CONFIGURATION =========================
-MAX_XP_FRAMES = 20  # Limite pour XP/LevelUp
+MAX_XP_FRAMES = 18  # 18 frames pour /xp et LevelUp
 # ================================================================
 
 _ROOT = Path(__file__).parent.parent
+_BACKGROUND_TOPPXP_PATH = _ROOT / "BackgroundTopXP"  # Fichier statique pour /topxp
 _FONT_DIR = Path(os.getenv("FONT_CACHE_DIR", "/tmp/bot_fonts"))
 _FONT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -39,21 +40,20 @@ LU_W, LU_H = 680, 200
 TOP_W, TOP_H = 680, 580
 
 # ========================= PALETTE (Contraste Max) =========================
-# Overlay ultra-sombre
-OVERLAY_ALPHA = 180  # 180/255 pour un fond très foncé
-GLASS = (255, 255, 255, 20)  # Verre presque transparent
-GLASS_BD = (255, 255, 255, 40)  # Bordure verre subtile
-NEON = (0, 220, 255)  # Bleu électrique
-VIOLET = (140, 80, 255)  # Violet profond
-TEXT_PRI = (255, 255, 255)  # Blanc pur (contraste max)
-TEXT_SEC = (220, 230, 255)  # Blanc légèrement bleuté
-TEXT_MUT = (180, 190, 220)  # Texte secondaire atténué
-GOLD = (255, 210, 60)  # Or vif
-SILVER = (200, 210, 230)  # Argent clair
-BRONZE = (220, 150, 80)  # Bronze chaud
+OVERLAY_ALPHA = 180  # Overlay ultra-sombre
+GLASS = (255, 255, 255, 20)
+GLASS_BD = (255, 255, 255, 40)
+NEON = (0, 220, 255)
+VIOLET = (140, 80, 255)
+TEXT_PRI = (255, 255, 255)  # Blanc pur
+TEXT_SEC = (220, 230, 255)
+TEXT_MUT = (180, 190, 220)
+GOLD = (255, 210, 60)
+SILVER = (200, 210, 230)
+BRONZE = (220, 150, 80)
 
 # ========================= CACHES =========================
-_bg_cache: Dict[Tuple[int, int], List[Image.Image]] = {}  # Plus besoin de duration pour le fallback
+_bg_cache: Dict[Tuple[int, int], Tuple[List[Image.Image], int]] = {}
 _topxp_template: Optional[Image.Image] = None
 _avatar_cache: Dict[Tuple[str, int], Optional[Image.Image]] = {}
 _font_cache: Dict[Tuple[str, int], ImageFont.FreeTypeFont] = {}
@@ -94,34 +94,65 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     _font_cache[key] = f
     return f
 
-# ========================= FALLBACK (Dégradé statique) =========================
-def _make_fallback_bg(w: int, h: int) -> Image.Image:
-    """Crée un fond dégradé sombre (remplace le GIF)."""
+# ========================= FOND ANIMÉ (pour /xp et LevelUp) =========================
+def _make_fallback_frames(w: int, h: int) -> List[Image.Image]:
+    """Fallback dégradé si le GIF est introuvable."""
     img = Image.new("RGBA", (w, h))
-    draw = ImageDraw.Draw(img)
-    # Dégradé vertical : noir (#0A0E1A) → bleu foncé (#121A2D)
+    d = ImageDraw.Draw(img)
     for y in range(h):
-        ratio = y / h
-        r = int(10 + (18 - 10) * ratio)
-        g = int(14 + (26 - 14) * ratio)
-        b = int(26 + (45 - 26) * ratio)
-        draw.line([(0, y), (w, y)], fill=(r, g, b, 255))
-    return img
+        t = y / max(h - 1, 1)
+        r = int(10 + (18 - 10) * t)
+        g = int(14 + (26 - 14) * t)
+        b = int(26 + (45 - 26) * t)
+        d.line([(0, y), (w, y)], fill=(r, g, b, 255))
+    return [img]
 
-def _load_bg_frames(w: int, h: int, max_frames: int = MAX_XP_FRAMES) -> List[Image.Image]:
-    """Charge les frames du fond (fallback dégradé si GIF absent)."""
+def _load_bg_frames(w: int, h: int, max_frames: Optional[int] = None) -> Tuple[List[Image.Image], int]:
+    """Charge les frames du GIF pour /xp et LevelUp."""
     key = (w, h)
     if key in _bg_cache:
-        return _bg_cache[key]
+        frames, duration = _bg_cache[key]
+        if max_frames:
+            return frames[:max_frames], duration
+        return frames, duration
 
-    # Utilise le fallback dégradé pour TOUS les cas (pas de GIF chargé)
-    frames = [_make_fallback_bg(w, h) for _ in range(max_frames)]
-    _bg_cache[key] = frames
-    return frames
+    # Chemin du GIF (à adapter si nécessaire)
+    _BG_PATH = _ROOT / "GIFKxqia.webp"
+
+    if not _BG_PATH.exists():
+        logger.warning("Fond animé introuvable → fallback dégradé")
+        result = (_make_fallback_frames(w, h), 80)
+        _bg_cache[key] = result
+        return result
+
+    try:
+        src = Image.open(_BG_PATH)
+        frames: List[Image.Image] = []
+        duration = 80
+        target = max_frames or 999
+
+        for i, frame in enumerate(ImageSequence.Iterator(src)):
+            if i >= target:
+                break
+            dur = frame.info.get("duration", 80)
+            if dur and dur > 0:
+                duration = int(dur)
+            resized = frame.convert("RGBA").resize((w, h), Image.BICUBIC)
+            frames.append(resized.copy())
+
+        logger.info("Fond chargé : %s → %dx%d (%d frames)", _BG_PATH.name, w, h, len(frames))
+        _bg_cache[key] = (frames, duration)
+        return frames, duration
+
+    except Exception as exc:
+        logger.warning("Erreur chargement fond → fallback : %s", exc)
+        result = (_make_fallback_frames(w, h), 80)
+        _bg_cache[key] = result
+        return result
 
 # ========================= TEMPLATES =========================
 def _dark_overlay(canvas: Image.Image, alpha: int = OVERLAY_ALPHA) -> None:
-    """Applique un overlay ultra-sombre pour le contraste."""
+    """Applique un overlay ultra-sombre."""
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, alpha))
     canvas.alpha_composite(overlay)
 
@@ -144,13 +175,20 @@ def _glass_panel(canvas: Image.Image, x: int, y: int, w: int, h: int, r: int = 1
     canvas.alpha_composite(panel)
 
 def _build_topxp_template() -> Image.Image:
-    """Template statique pour /topxp (PNG)."""
+    """Template statique pour /topxp (utilise BackgroundTopXP)."""
     global _topxp_template
     if _topxp_template is not None:
         return _topxp_template.copy()
 
-    # Fond dégradé statique
-    canvas = _make_fallback_bg(TOP_W, TOP_H).convert("RGBA")
+    if not _BACKGROUND_TOPPXP_PATH.exists():
+        raise FileNotFoundError(f"Fichier BackgroundTopXP introuvable à {_BACKGROUND_TOPPXP_PATH}")
+
+    # Charge l'image statique
+    bg = Image.open(_BACKGROUND_TOPPXP_PATH).convert("RGBA")
+    bg = bg.resize((TOP_W, TOP_H), Image.BICUBIC)
+    canvas = bg.copy()
+
+    # Applique l'overlay sombre
     _dark_overlay(canvas, OVERLAY_ALPHA)
 
     # Grille légère
@@ -194,7 +232,7 @@ def _draw_xp_bar(canvas: Image.Image, x: int, y: int, w: int, h: int, progress: 
     bg.paste(Image.new("RGBA", (w, h), (255, 255, 255, 22)), (x, y), bg_mask)
     canvas.alpha_composite(bg)
 
-    # Barre de progression (dégradé violet → neon)
+    # Barre de progression
     fill_w = max(r * 2, int(w * prog))
     bar = Image.new("RGBA", (fill_w, h), (0, 0, 0, 0))
     for px in range(fill_w):
@@ -207,7 +245,7 @@ def _draw_xp_bar(canvas: Image.Image, x: int, y: int, w: int, h: int, progress: 
     filled.paste(bar, (x, y), _rounded_rect_mask(fill_w, h, r))
     canvas.alpha_composite(filled)
 
-    # Glow à droite
+    # Glow
     glow_r = h + 4
     gx = x + fill_w - glow_r // 2
     gy = y + h // 2 - glow_r // 2
@@ -215,10 +253,7 @@ def _draw_xp_bar(canvas: Image.Image, x: int, y: int, w: int, h: int, progress: 
     dg = ImageDraw.Draw(glow)
     for i in range(glow_r, 0, -1):
         a = int(55 * (i / glow_r) ** 2)
-        dg.ellipse(
-            (gx + glow_r - i, gy + glow_r - i, gx + glow_r + i, gy + glow_r + i),
-            fill=(*NEON, a)
-        )
+        dg.ellipse((gx + glow_r - i, gy + glow_r - i, gx + glow_r + i, gy + glow_r + i), fill=(*NEON, a))
     canvas.alpha_composite(glow)
 
     # Label %
@@ -230,7 +265,6 @@ def _draw_xp_bar(canvas: Image.Image, x: int, y: int, w: int, h: int, progress: 
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         tx = x + w - tw - 6
         ty = y + (h - th) // 2
-        # Ombre
         draw.text((tx + 1, ty + 1), pct_txt, font=f_pct, fill=(0, 0, 0, 200))
         draw.text((tx, ty), pct_txt, font=f_pct, fill=TEXT_PRI)
 
@@ -239,14 +273,12 @@ def _avatar_with_ring(canvas: Image.Image, avatar: Optional[Image.Image], cx: in
     ring_r = av_size // 2 + 3
     ring = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(ring)
-    # Anneau extérieur (glow)
     for i in range(8, 0, -1):
         d.ellipse(
             (cx - ring_r - i, cy - ring_r - i, cx + ring_r + i, cy + ring_r + i),
             outline=(*NEON, int(35 * i / 8)),
             width=1
         )
-    # Anneau principal
     d.ellipse(
         (cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r),
         outline=(*NEON, 220),
@@ -254,7 +286,6 @@ def _avatar_with_ring(canvas: Image.Image, avatar: Optional[Image.Image], cx: in
     )
     canvas.alpha_composite(ring)
 
-    # Avatar (ou placeholder)
     if avatar:
         canvas.paste(avatar, (cx - av_size // 2, cy - av_size // 2), avatar)
     else:
@@ -265,7 +296,7 @@ def _avatar_with_ring(canvas: Image.Image, avatar: Optional[Image.Image], cx: in
         canvas.alpha_composite(ph_l)
 
 def _level_badge(canvas: Image.Image, draw: ImageDraw.ImageDraw, x: int, y: int, level: int) -> None:
-    """Badge de niveau avec fond semi-transparent."""
+    """Badge de niveau."""
     label = f"LVL {level}"
     f = _font(13, bold=True)
     bbox = draw.textbbox((0, 0), label, font=f)
@@ -297,13 +328,11 @@ def _build_xp_frame(
     PAD = 16
     _glass_panel(canvas, PAD, PAD, XP_W - PAD * 2, XP_H - PAD * 2, r=20)
 
-    # Avatar
     AV = 100
     CX = PAD + 20 + AV // 2
     CY = XP_H // 2
     _avatar_with_ring(canvas, avatar, CX, CY, AV)
 
-    # Texte
     draw = ImageDraw.Draw(canvas)
     TX = CX + AV // 2 + 24
 
@@ -311,24 +340,19 @@ def _build_xp_frame(
     name_s = name[:22] + ("…" if len(name) > 22 else "")
     draw.text((TX, PAD + 14), name_s, font=f_name, fill=TEXT_PRI)
 
-    # Badge de niveau
     bbox = draw.textbbox((TX, PAD + 14), name_s, font=f_name)
     _level_badge(canvas, draw, bbox[2] + 10, PAD + 18, level)
 
-    # XP actuel / requis
     draw.text((TX, PAD + 48), f"{xp_progress:,} / {xp_required:,} XP", font=_font(15), fill=TEXT_SEC)
 
-    # Barre de XP
     BAR_X = TX
     BAR_Y = PAD + 76
     BAR_W = XP_W - PAD - 20 - TX
     ratio = xp_progress / xp_required if xp_required > 0 else 1.0
     _draw_xp_bar(canvas, BAR_X, BAR_Y, BAR_W, 14, ratio, True)
 
-    # Total XP
     draw.text((TX, BAR_Y + 22), f"Total : {xp_total:,} XP", font=_font(13), fill=TEXT_MUT)
 
-    # Ligne verticale
     line = Image.new("RGBA", (XP_W, XP_H), (0, 0, 0, 0))
     ImageDraw.Draw(line).rectangle(
         (PAD + AV + 36, PAD + 24, PAD + AV + 37, XP_H - PAD - 24),
@@ -351,13 +375,11 @@ def _build_levelup_frame(
     PAD = 16
     _glass_panel(canvas, PAD, PAD, LU_W - PAD * 2, LU_H - PAD * 2, r=20)
 
-    # Avatar
     AV = 100
     CX = PAD + 20 + AV // 2
     CY = LU_H // 2
     _avatar_with_ring(canvas, avatar, CX, CY, AV)
 
-    # Texte
     draw = ImageDraw.Draw(canvas)
     TX = CX + AV // 2 + 28
 
@@ -366,14 +388,12 @@ def _build_levelup_frame(
     draw.text((TX, PAD + 46), name_s, font=_font(20, bold=True), fill=TEXT_PRI)
     draw.text((TX, PAD + 72), f"Niveau {old_level} → {new_level}", font=_font(16), fill=TEXT_SEC)
 
-    # Barre de XP
     BAR_X = TX
     BAR_Y = PAD + 102
     BAR_W = LU_W - PAD - 20 - TX
     ratio = xp_progress / xp_required if xp_required > 0 else 1.0
     _draw_xp_bar(canvas, BAR_X, BAR_Y, BAR_W, 14, ratio, True)
 
-    # XP actuel / requis
     draw.text((TX, BAR_Y + 22), f"{xp_progress:,} / {xp_required:,} XP", font=_font(13), fill=TEXT_SEC)
     return canvas
 
@@ -396,7 +416,6 @@ def _build_topxp_frame(
         ry = START_Y + idx * ROW_H
         rank_col = RANK_COLORS[idx] if idx < 3 else TEXT_MUT
 
-        # Fond des lignes paires
         if idx % 2 == 0:
             row_bg = Image.new("RGBA", (TOP_W, TOP_H), (0, 0, 0, 0))
             ImageDraw.Draw(row_bg).rounded_rectangle(
@@ -406,16 +425,13 @@ def _build_topxp_frame(
             )
             canvas.alpha_composite(row_bg)
 
-        # Rang
         draw.text((PAD + 16, ry + 11), f"#{idx + 1}", font=_font(16, bold=True), fill=rank_col)
 
-        # Avatar
         av = avatars[idx] if idx < len(avatars) else None
         av_x = PAD + 54
         av_y = ry + (ROW_H - 4 - AV_SIZE) // 2
 
         if av:
-            # Anneau de rang
             ring = Image.new("RGBA", (TOP_W, TOP_H), (0, 0, 0, 0))
             ImageDraw.Draw(ring).ellipse(
                 (av_x - 3, av_y - 3, av_x + AV_SIZE + 3, av_y + AV_SIZE + 3),
@@ -424,23 +440,19 @@ def _build_topxp_frame(
             )
             canvas.alpha_composite(ring)
 
-            # Avatar redimensionné
             av_r = av.resize((AV_SIZE, AV_SIZE), Image.LANCZOS)
             mask = _rounded_rect_mask(AV_SIZE, AV_SIZE, AV_SIZE // 2)
             av_l = Image.new("RGBA", (TOP_W, TOP_H), (0, 0, 0, 0))
             av_l.paste(av_r, (av_x, av_y), mask)
             canvas.alpha_composite(av_l)
 
-        # Nom d'utilisateur
         uname = (entry.get("user_name") or "Inconnu")[:23]
         draw.text((av_x + AV_SIZE + 12, ry + 8), uname, font=_font(15, bold=True), fill=TEXT_PRI)
 
-        # Niveau et XP
         xp_val = int(entry.get("xp", 0) or 0)
         lv = xp_to_level_fn(xp_val)
         rx = TOP_W - PAD - 20
 
-        # Badge de niveau
         lv_txt = f"LVL {lv}"
         lv_box = draw.textbbox((0, 0), lv_txt, font=_font(13, bold=True))
         draw.text(
@@ -450,7 +462,6 @@ def _build_topxp_frame(
             fill=NEON
         )
 
-        # XP
         xp_txt = f"{xp_val:,} XP"
         xp_box = draw.textbbox((0, 0), xp_txt, font=_font(12))
         draw.text(
@@ -492,11 +503,11 @@ def _build_xp_card_sync(
     xp_required: int,
     xp_total: int
 ) -> io.BytesIO:
-    templates = _load_bg_frames(XP_W, XP_H, MAX_XP_FRAMES)
-    return _encode_output([
-        _build_xp_frame(t, name, avatar, level, xp_progress, xp_required, xp_total)
-        for t in templates
-    ])
+    templates, duration = _load_bg_frames(XP_W, XP_H, MAX_XP_FRAMES)
+    return _encode_output(
+        [_build_xp_frame(t, name, avatar, level, xp_progress, xp_required, xp_total) for t in templates],
+        duration
+    )
 
 def _build_levelup_sync(
     name: str,
@@ -506,11 +517,11 @@ def _build_levelup_sync(
     xp_progress: int,
     xp_required: int
 ) -> io.BytesIO:
-    templates = _load_bg_frames(LU_W, LU_H, MAX_XP_FRAMES)
-    return _encode_output([
-        _build_levelup_frame(t, name, avatar, old_level, new_level, xp_progress, xp_required)
-        for t in templates
-    ])
+    templates, duration = _load_bg_frames(LU_W, LU_H, MAX_XP_FRAMES)
+    return _encode_output(
+        [_build_levelup_frame(t, name, avatar, old_level, new_level, xp_progress, xp_required) for t in templates],
+        duration
+    )
 
 def _build_topxp_sync(
     guild_name: str,
@@ -555,7 +566,7 @@ async def generate_xp_card(
     xp_progress: int,
     xp_required: int
 ) -> Tuple[io.BytesIO, str]:
-    """Génère une carte XP animée (GIF)."""
+    """Génère une carte XP animée (GIF avec 18 frames)."""
     avatar = await _fetch_avatar(avatar_url, 100)
     loop = asyncio.get_event_loop()
     buf = await loop.run_in_executor(
@@ -581,7 +592,7 @@ async def generate_levelup_card(
     xp_progress: int,
     xp_required: int
 ) -> Tuple[io.BytesIO, str]:
-    """Génère une carte LevelUp animée (GIF)."""
+    """Génère une carte LevelUp animée (GIF avec 18 frames)."""
     avatar = await _fetch_avatar(avatar_url, 100)
     loop = asyncio.get_event_loop()
     buf = await loop.run_in_executor(
@@ -603,7 +614,7 @@ async def generate_topxp_card(
     entries: List[Dict],
     xp_to_level_fn: Callable[[int], int]
 ) -> Tuple[io.BytesIO, str]:
-    """Génère une carte /topxp statique (PNG)."""
+    """Génère une carte /topxp statique (PNG avec BackgroundTopXP)."""
     avatars = await asyncio.gather(*[
         _fetch_avatar(e.get("avatar_url"), 32) for e in entries[:10]
     ])
@@ -622,18 +633,17 @@ async def generate_topxp_card(
 
 # ========================= WARMUP =========================
 def warmup_sync() -> None:
-    """Précharge les ressources pour éviter les latences."""
+    """Précharge les ressources."""
     _ensure_fonts()
-    # Précharge les polices courantes
     for size in (12, 13, 14, 15, 16, 20, 22, 26, 30):
         _font(size, False)
         _font(size, True)
-    # Précharge les frames de fond (fallback)
+
     _load_bg_frames(XP_W, XP_H, MAX_XP_FRAMES)
     _load_bg_frames(LU_W, LU_H, MAX_XP_FRAMES)
-    # Précharge le template /topxp
-    _build_topxp_template()
-    logger.info(f"Warmup v4 terminé — {MAX_XP_FRAMES} frames max pour XP/LevelUp, /topxp en PNG statique")
+    _build_topxp_template()  # Précharge le template /topxp
+
+    logger.info(f"Warmup terminé — {MAX_XP_FRAMES} frames pour /xp et LevelUp, /topxp en PNG statique")
 
 async def warmup() -> None:
     """Version asynchrone du warmup."""
