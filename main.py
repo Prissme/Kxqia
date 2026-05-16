@@ -1,10 +1,12 @@
 """
-main.py — Version finale pour Prissme TV
-=========================================
-- /topxp : Sans avatars (texte uniquement), cache 5min
-- Logs HTTP filtrés (plus de spam Koyeb)
+main.py — Version finale avec contrôle XP complet
+=================================================
+- Limite journalière : 3000 XP (reset à minuit UTC)
+- Diminishing returns : -75% après 2000 XP/jour
+- Commandes admin : /addxp, /removexp
+- Cache /topxp : 1 mois
+- Logs HTTP désactivés (plus de spam Koyeb)
 - Toutes les fonctionnalités originales conservées
-- Gestion des erreurs robuste
 """
 
 import asyncio
@@ -15,7 +17,7 @@ import logging
 import os
 import random
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 from urllib.parse import urlparse
@@ -24,20 +26,16 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# --- Configuration du logging (sans spam HTTP) ---
-class HTTPFilter(logging.Filter):
-    def filter(self, record):
-        if "aiohttp" in record.name:
-            return False
-        if "HTTP Request" in getattr(record, "message", ""):
-            return False
-        return True
-
+# --- Désactive COMPLÈTEMENT les logs HTTP (plus de spam Koyeb) ---
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
+    format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
+    force=True  # Force le remplacement de tout handler existant
 )
-logging.getLogger().addFilter(HTTPFilter())
+# Désactive les logs de aiohttp/discord/supabase
+logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
+logging.getLogger("discord").setLevel(logging.WARNING)
+logging.getLogger("supabase").setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 
 # --- Imports locaux ---
@@ -54,9 +52,11 @@ from bot.slow_mode import SlowModeManager
 from bot.level_roles import sync_level_roles
 from bot.card_generator import generate_levelup_card, generate_topxp_card, generate_xp_card
 
-# --- Variables globales pour le cache ---
+# --- Variables globales pour le cache et le contrôle XP ---
 _topxp_cache: dict = {}  # {guild_id: (card_buf, fname, timestamp)}
 _topxp_data_cache: dict = {}  # {guild_id: (data, timestamp)}
+_daily_xp: defaultdict = defaultdict(lambda: defaultdict(int))  # {guild_id: {user_id: xp_today}}
+_last_xp_reset = datetime.datetime.utcnow()  # Dernier reset des XP journaliers
 
 # --- Configuration Discord ---
 intents = discord.Intents.default()
@@ -69,6 +69,21 @@ intents.reactions = True
 bot = commands.Bot(command_prefix=commands.when_mentioned_or('!', 'e!'), intents=intents, help_command=None)
 bot.trap_words: dict[int, str] = {}
 bot.blacklist_words: dict[int, set[str]] = {}
+
+# --- XP Configuration ---
+XP_PER_MESSAGE = 5
+XP_PER_REACTION = 3
+XP_COOLDOWN_SECONDS = 30
+XP_REACT_COOLDOWN_SEC = 60
+MAX_LEVEL = 99
+XP_BASE_BY_LEVEL = 100
+XP_GROWTH_FACTOR = 1.12
+DAILY_XP_CAP = 3000  # Limite journalière
+DAILY_XP_THRESHOLD = 2000  # Seuil pour diminishing returns
+DAILY_XP_REDUCTION = 0.25  # 25% de l'XP après le seuil (75% de réduction)
+
+_xp_last_gain_at: dict[tuple[int, int], datetime.datetime] = {}
+_xp_react_cooldown: dict[tuple[int, int, int], datetime.datetime] = {}
 
 # --- IDs rôles / salons ---
 ROLE_CHANNEL_ID = 1267617798658457732
@@ -100,18 +115,6 @@ LEVEL_ROLES: dict[int, int] = {
     30: 1504564315687227402,
     50: 1504564316827947069,
 }
-
-# --- XP Configuration ---
-XP_PER_MESSAGE = 5
-XP_PER_REACTION = 3
-XP_COOLDOWN_SECONDS = 30
-XP_REACT_COOLDOWN_SEC = 60
-MAX_LEVEL = 99
-XP_BASE_BY_LEVEL = 100
-XP_GROWTH_FACTOR = 1.12
-
-_xp_last_gain_at: dict[tuple[int, int], datetime.datetime] = {}
-_xp_react_cooldown: dict[tuple[int, int, int], datetime.datetime] = {}
 
 # --- URL Regex ---
 URL_REGEX = re.compile(r"(https?://[^\s]+|www\.[^\s]+)", re.IGNORECASE)
@@ -175,6 +178,21 @@ def _is_allowed_link(url: str) -> bool:
         return True
     return any(host == d or host.endswith(f".{d}") for d in ALLOWED_VIDEO_DOMAINS)
 
+# --- XP Daily Reset Task ---
+async def reset_daily_xp():
+    """Reset les XP journaliers à minuit UTC tous les jours"""
+    while True:
+        now = datetime.datetime.utcnow()
+        # Calcule le temps jusqu'à minuit UTC
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(days=1)
+        wait_seconds = (midnight - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        # Reset des XP journaliers
+        global _daily_xp, _last_xp_reset
+        _daily_xp = defaultdict(lambda: defaultdict(int))
+        _last_xp_reset = datetime.datetime.utcnow()
+        logger.info("Reset quotidien des XP effectué.")
+
 # --- XP Calculations ---
 def _xp_required_for_next_level(level: int) -> int:
     if level < 0:
@@ -212,6 +230,43 @@ def _build_progress_bar(progress: int, required: int, size: int = 12) -> str:
     ratio = min(1.0, max(0.0, progress / required)) if required > 0 else 1.0
     filled = round(ratio * size)
     return f"{'█' * filled}{'░' * (size - filled)} {int(ratio * 100)}%"
+
+# --- XP Daily Control Functions ---
+def _get_daily_xp(guild_id: int, user_id: int) -> int:
+    """Récupère l'XP gagné aujourd'hui par un utilisateur"""
+    return _daily_xp[guild_id][user_id]
+
+def _add_daily_xp(guild_id: int, user_id: int, amount: int) -> int:
+    """Ajoute de l'XP au compteur journalier et retourne l'XP réel à ajouter"""
+    current = _get_daily_xp(guild_id, user_id)
+    new_total = current + amount
+
+    # Applique le cap journalier
+    if new_total > DAILY_XP_CAP:
+        remaining_cap = DAILY_XP_CAP - current
+        if remaining_cap <= 0:
+            return 0  # Cap atteint
+
+        # Applique le diminishing returns si > 2000 XP
+        if current >= DAILY_XP_THRESHOLD:
+            actual_add = int(amount * DAILY_XP_REDUCTION)
+            new_total = current + actual_add
+            if new_total > DAILY_XP_CAP:
+                actual_add = DAILY_XP_CAP - current
+            _daily_xp[guild_id][user_id] = new_total
+            return actual_add
+        else:
+            _daily_xp[guild_id][user_id] = DAILY_XP_CAP
+            return remaining_cap
+    else:
+        # Applique le diminishing returns si > 2000 XP
+        if current >= DAILY_XP_THRESHOLD:
+            actual_add = int(amount * DAILY_XP_REDUCTION)
+            _daily_xp[guild_id][user_id] = new_total
+            return actual_add
+        else:
+            _daily_xp[guild_id][user_id] = new_total
+            return amount
 
 # --- XP Role Management ---
 def _get_level_role_for_level(level: int) -> Optional[int]:
@@ -256,7 +311,7 @@ async def _sync_level_roles_hardcoded(member: discord.Member, new_level: int) ->
 
     return granted_role
 
-# --- XP Gain Functions ---
+# --- XP Gain Functions (avec contrôle journalier) ---
 async def _grant_message_xp(message: discord.Message) -> None:
     if message.guild is None:
         return
@@ -266,9 +321,19 @@ async def _grant_message_xp(message: discord.Message) -> None:
     if last and (now - last).total_seconds() < XP_COOLDOWN_SECONDS:
         return
 
-    guild_id = str(message.guild.id)
-    user_id = str(message.author.id)
-    current = db.get_user_xp(guild_id, user_id)
+    guild_id = message.guild.id
+    user_id = message.author.id
+    base_xp = XP_PER_MESSAGE
+
+    # Applique le contrôle journalier
+    actual_xp = _add_daily_xp(guild_id, user_id, base_xp)
+    if actual_xp <= 0:
+        _xp_last_gain_at[key] = now
+        return  # Cap journalier atteint
+
+    guild_id_str = str(guild_id)
+    user_id_str = str(user_id)
+    current = db.get_user_xp(guild_id_str, user_id_str)
     current_xp = int(current.get('xp', 0) or 0)
 
     if current_xp >= MAX_XP:
@@ -276,8 +341,8 @@ async def _grant_message_xp(message: discord.Message) -> None:
         return
 
     old_level = _xp_to_level(current_xp)
-    new_xp = min(MAX_XP, current_xp + XP_PER_MESSAGE)
-    db.set_user_xp(guild_id, user_id, str(message.author), new_xp)
+    new_xp = min(MAX_XP, current_xp + actual_xp)
+    db.set_user_xp(guild_id_str, user_id_str, str(message.author), new_xp)
     _xp_last_gain_at[key] = now
 
     new_level = _xp_to_level(new_xp)
@@ -310,6 +375,12 @@ async def _grant_reaction_xp(reaction: discord.Reaction, reactor: discord.Member
     except Exception:
         pass
 
+    # Applique le contrôle journalier pour l'auteur du message
+    base_xp = XP_PER_REACTION
+    actual_xp = _add_daily_xp(guild_id, author.id, base_xp)
+    if actual_xp <= 0:
+        return  # Cap journalier atteint
+
     guild_id_str = str(guild_id)
     user_id_str = str(author.id)
     current = db.get_user_xp(guild_id_str, user_id_str)
@@ -319,7 +390,7 @@ async def _grant_reaction_xp(reaction: discord.Reaction, reactor: discord.Member
         return
 
     old_level = _xp_to_level(current_xp)
-    new_xp = min(MAX_XP, current_xp + XP_PER_REACTION)
+    new_xp = min(MAX_XP, current_xp + actual_xp)
     db.set_user_xp(guild_id_str, user_id_str, str(author), new_xp)
 
     new_level = _xp_to_level(new_xp)
@@ -359,7 +430,7 @@ async def _handle_level_up(
         embed = discord.Embed(title="🆙 Level Up !", description=description, color=0x5865F2)
 
         if card_buf:
-            card_buf.seek(0)  # Réinitialise le pointeur
+            card_buf.seek(0)
             embed.set_image(url=f"attachment://{fname}")
             await channel.send(embed=embed, file=discord.File(card_buf, filename=fname))
         else:
@@ -603,12 +674,12 @@ async def collect_message_stats(guild: discord.Guild, cutoff: datetime.datetime)
             continue
     return len(authors), counter
 
-# --- Optimized /topxp WITHOUT avatars (text only) ---
+# --- Optimized /topxp with 1 MONTH cache and NO avatars ---
 async def _get_cached_topxp_data(guild_id: int) -> Optional[list]:
-    """Get top XP data with 5-minute cache"""
+    """Get top XP data with 1 MONTH cache"""
     now = datetime.datetime.utcnow()
     cached = _topxp_data_cache.get(guild_id)
-    if cached and (now - cached[1]).total_seconds() < 300:  # 5 minutes
+    if cached and (now - cached[1]).total_seconds() < 2592000:  # 30 jours = 1 mois
         return cached[0]
     try:
         data = db.get_top_xp(str(guild_id), limit=10)
@@ -632,12 +703,12 @@ async def topxp_slash(interaction: discord.Interaction):
             await interaction.followup.send('Aucune XP enregistrée pour le moment.')
             return
 
-        # Check cache for this guild
+        # Check cache for this guild (1 MONTH)
         cached = _topxp_cache.get(guild_id)
         now = datetime.datetime.utcnow()
-        if cached and (now - cached[2]).total_seconds() < 300:  # 5 minutes
+        if cached and (now - cached[2]).total_seconds() < 2592000:  # 1 mois
             cached_buf, fname, _ = cached
-            cached_buf.seek(0)  # Réinitialise le pointeur
+            cached_buf.seek(0)
             await interaction.followup.send(file=discord.File(cached_buf, filename=fname))
             return
 
@@ -659,9 +730,9 @@ async def topxp_slash(interaction: discord.Interaction):
             xp_to_level_fn=_xp_to_level,
         )
 
-        # Update cache for this guild
+        # Update cache for this guild (1 MONTH)
         if card_buf:
-            card_buf.seek(0)  # Réinitialise le pointeur
+            card_buf.seek(0)
             _topxp_cache[guild_id] = (card_buf, fname, now)
 
         if card_buf:
@@ -684,12 +755,87 @@ async def topxp_slash(interaction: discord.Interaction):
         logger.error(f"Erreur dans /topxp: {e}")
         await interaction.followup.send("Une erreur est survenue.", ephemeral=True)
 
+# --- Admin XP Commands ---
+@bot.tree.command(name='addxp', description='Ajoute de l\'XP à un utilisateur (ignore les limites journalières)')
+@app_commands.describe(user='Utilisateur', amount='Quantité d\'XP à ajouter')
+@app_commands.checks.has_permissions(administrator=True)
+async def addxp(interaction: discord.Interaction, user: discord.Member, amount: int):
+    if amount <= 0:
+        await interaction.response.send_message("La quantité d'XP doit être positive.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    user_id = user.id
+    guild_id_str = str(guild_id)
+    user_id_str = str(user_id)
+
+    try:
+        current = db.get_user_xp(guild_id_str, user_id_str)
+        current_xp = int(current.get('xp', 0) or 0)
+        new_xp = min(MAX_XP, current_xp + amount)
+
+        db.set_user_xp(guild_id_str, user_id_str, str(user), new_xp)
+
+        new_level = _xp_to_level(new_xp)
+        old_level = _xp_to_level(current_xp)
+
+        if new_level > old_level:
+            await _handle_level_up(interaction.channel, user, old_level, new_level, new_xp)
+
+        await interaction.response.send_message(
+            f"✅ {amount} XP ajoutés à {user.mention} (Total: {new_xp} XP).",
+            ephemeral=True
+        )
+    except Exception as e:
+        logger.error(f"Erreur dans /addxp: {e}")
+        await interaction.response.send_message("Une erreur est survenue.", ephemeral=True)
+
+@bot.tree.command(name='removexp', description='Retire de l\'XP à un utilisateur (minimum 0)')
+@app_commands.describe(user='Utilisateur', amount='Quantité d\'XP à retirer')
+@app_commands.checks.has_permissions(administrator=True)
+async def removexp(interaction: discord.Interaction, user: discord.Member, amount: int):
+    if amount <= 0:
+        await interaction.response.send_message("La quantité d'XP doit être positive.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+    user_id = user.id
+    guild_id_str = str(guild_id)
+    user_id_str = str(user_id)
+
+    try:
+        current = db.get_user_xp(guild_id_str, user_id_str)
+        current_xp = int(current.get('xp', 0) or 0)
+        new_xp = max(0, current_xp - amount)
+
+        db.set_user_xp(guild_id_str, user_id_str, str(user), new_xp)
+
+        old_level = _xp_to_level(current_xp)
+        new_level = _xp_to_level(new_xp)
+
+        if new_level < old_level:
+            # Optionnel: Envoyer un message de downgrade
+            await interaction.channel.send(
+                f"📉 {user.mention} est redescendu au niveau {new_level} (XP: {new_xp})."
+            )
+
+        await interaction.response.send_message(
+            f"✅ {amount} XP retirés à {user.mention} (Nouveau total: {new_xp} XP).",
+            ephemeral=True
+        )
+    except Exception as e:
+        logger.error(f"Erreur dans /removexp: {e}")
+        await interaction.response.send_message("Une erreur est survenue.", ephemeral=True)
+
 # --- Discord Events ---
 @bot.event
 async def on_ready():
     global _role_view_added
     _ensure_background_tasks()
     logger.info('%s est connecté!', bot.user)
+
+    # Démarre la tâche de reset quotidien
+    bot.loop.create_task(reset_daily_xp())
 
     for guild in bot.guilds:
         missing = [
@@ -923,7 +1069,8 @@ async def rewards_cmd(ctx: commands.Context):
         text=(
             f"Gagne de l'XP en envoyant des messages (+{XP_PER_MESSAGE} XP/msg, "
             f"cooldown {XP_COOLDOWN_SECONDS}s) et en recevant des réactions "
-            f"(+{XP_PER_REACTION} XP/réaction)."
+            f"(+{XP_PER_REACTION} XP/réaction).\n"
+            f"Limite journalière: {DAILY_XP_CAP} XP (réduction de 75% après {DAILY_XP_THRESHOLD} XP)."
         )
     )
     if ctx.guild.icon:
@@ -942,6 +1089,9 @@ async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Memb
     level = _xp_to_level(xp_value)
     progress, required = _xp_in_current_level(xp_value)
 
+    # Affiche aussi l'XP journalier
+    daily_xp = _get_daily_xp(ctx.guild.id, target.id)
+
     try:
         card_buf, fname = await generate_xp_card(
             member_name=target.display_name,
@@ -956,10 +1106,18 @@ async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Memb
             await ctx.send(file=discord.File(card_buf, filename=fname))
         else:
             progress_bar = _build_progress_bar(1, 1) if level >= MAX_LEVEL else _build_progress_bar(progress, required)
-            await ctx.send(f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n{progress_bar}")
+            await ctx.send(
+                f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n"
+                f"XP aujourd'hui: {daily_xp}/{DAILY_XP_CAP}\n"
+                f"{progress_bar}"
+            )
     except Exception:
         progress_bar = _build_progress_bar(1, 1) if level >= MAX_LEVEL else _build_progress_bar(progress, required)
-        await ctx.send(f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n{progress_bar}")
+        await ctx.send(
+            f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n"
+            f"XP aujourd'hui: {daily_xp}/{DAILY_XP_CAP}\n"
+            f"{progress_bar}"
+        )
 
 @bot.command(name='reactlb')
 async def reactlb(ctx: commands.Context):
@@ -1046,6 +1204,14 @@ async def help_user(interaction: discord.Interaction):
         ),
         inline=False,
     )
+    embed.add_field(
+        name="📊 Système XP",
+        value=(
+            f"Limite journalière: **{DAILY_XP_CAP} XP**\n"
+            f"Réduction de 75% après **{DAILY_XP_THRESHOLD} XP**"
+        ),
+        inline=False,
+    )
     embed.set_footer(text=f"Uptime : {uptime()}")
     await interaction.response.send_message(embed=embed)
 
@@ -1075,11 +1241,12 @@ async def help_admin(interaction: discord.Interaction):
         inline=False,
     )
     embed.add_field(
-        name="📊 Système XP",
+        name="📊 Système XP (Admin)",
         value=(
-            "`!syncroles` — Synchronise les rôles de niveau de tous les membres\n"
-            "`/setup_roles` — Relancer l'embed de sélection des rôles\n"
-            "`/levelup` — Teste la carte LevelUp (simule un niveau up)"
+            "`/addxp [user] [amount]` — Ajoute de l'XP (ignore les limites)\n"
+            "`/removexp [user] [amount]` — Retire de l'XP (min 0)\n"
+            "`!syncroles` — Synchronise les rôles de niveau\n"
+            "`/setup_roles` — Relancer l'embed de sélection des rôles"
         ),
         inline=False,
     )
@@ -1105,6 +1272,9 @@ async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Me
     level = _xp_to_level(xp_value)
     progress, required = _xp_in_current_level(xp_value)
 
+    # Affiche aussi l'XP journalier
+    daily_xp = _get_daily_xp(interaction.guild.id, target.id)
+
     try:
         card_buf, fname = await generate_xp_card(
             member_name=target.display_name,
@@ -1119,207 +1289,18 @@ async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Me
             await interaction.followup.send(file=discord.File(card_buf, filename=fname))
         else:
             progress_bar = _build_progress_bar(1, 1) if level >= MAX_LEVEL else _build_progress_bar(progress, required)
-            await interaction.followup.send(f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n{progress_bar}")
+            await interaction.followup.send(
+                f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n"
+                f"XP aujourd'hui: {daily_xp}/{DAILY_XP_CAP}\n"
+                f"{progress_bar}"
+            )
     except Exception:
         progress_bar = _build_progress_bar(1, 1) if level >= MAX_LEVEL else _build_progress_bar(progress, required)
-        await interaction.followup.send(f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n{progress_bar}")
-
-@bot.tree.command(name='levelup', description='Teste la carte LevelUp (simule un niveau up)')
-@app_commands.describe(old_level='Ancien niveau', new_level='Nouveau niveau')
-async def levelup_slash(interaction: discord.Interaction, old_level: int = 1, new_level: int = 2):
-    if interaction.guild is None:
-        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
-        return
-
-    await interaction.response.defer()
-
-    try:
-        avatar_url = str(interaction.user.display_avatar.url)
-        xp_total = new_level * 1000
-        xp_progress = 500
-        xp_required = _xp_required_for_next_level(new_level)
-
-        card_buf, fname = await generate_levelup_card(
-            member_name=str(interaction.user),
-            avatar_url=avatar_url,
-            old_level=old_level,
-            new_level=new_level,
-            xp_total=xp_total,
-            xp_progress=xp_progress,
-            xp_required=xp_required,
+        await interaction.followup.send(
+            f"**{target.display_name}** — Niveau {level} | {xp_value} XP total\n"
+            f"XP aujourd'hui: {daily_xp}/{DAILY_XP_CAP}\n"
+            f"{progress_bar}"
         )
-
-        if card_buf:
-            card_buf.seek(0)
-            await interaction.followup.send(file=discord.File(card_buf, filename=fname))
-        else:
-            await interaction.followup.send(f"Level Up de {old_level} à {new_level} !")
-    except Exception:
-        await interaction.followup.send("Une erreur est survenue.", ephemeral=True)
-
-@bot.tree.command(name='setup_roles', description='Renvoie l\'embed des rôles dans le salon configuré')
-async def setup_roles(interaction: discord.Interaction):
-    if interaction.guild is None:
-        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
-        return
-    if not interaction.user.guild_permissions.manage_roles:
-        await interaction.response.send_message('Permissions insuffisantes.', ephemeral=True)
-        return
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    try:
-        await _send_roles_message(source=f"setup_roles:{interaction.user}")
-        await interaction.followup.send("Embed des rôles envoyé avec succès.", ephemeral=True)
-    except Exception:
-        await interaction.followup.send("Impossible d'envoyer l'embed pour le moment.", ephemeral=True)
-
-@bot.tree.command(name='purge', description='Nettoie les messages et verrouille le salon pour les membres')
-@app_commands.describe(amount='Nombre de messages à supprimer (1-1000)', reason='Raison')
-async def purge(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 1000] = 100, reason: Optional[str] = None):
-    if not interaction.user.guild_permissions.manage_channels:
-        await interaction.response.send_message('Permissions insuffisantes.', ephemeral=True)
-        return
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    channel = interaction.channel
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.followup.send('Cette commande ne peut être utilisée que dans un salon textuel.', ephemeral=True)
-        return
-
-    log_reason = reason or f'Purge demandée par {interaction.user}'
-    deleted = await channel.purge(limit=amount, reason=log_reason)
-
-    overwrite = channel.overwrites_for(interaction.guild.default_role) or discord.PermissionOverwrite()
-    overwrite.send_messages = False
-    overwrite.add_reactions = True
-    overwrite.create_public_threads = False
-    overwrite.create_private_threads = False
-    overwrite.send_messages_in_threads = False
-    await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite, reason='Salon verrouillé après purge')
-
-    info_embed = discord.Embed(
-        title='🔒 Salon verrouillé',
-        description="Ce salon vient d'être purgé et est désormais verrouillé pour les membres.",
-        color=0xffa500,
-    )
-    info_embed.add_field(name='Messages supprimés', value=str(len(deleted)), inline=True)
-    if reason:
-        info_embed.add_field(name='Raison', value=reason, inline=False)
-    info_embed.set_footer(text=f'Action effectuée par {interaction.user.display_name}')
-
-    db.add_moderation_action('purge', str(channel.id), channel.name, str(interaction.user.id), str(interaction.user), reason or '', {'messages_deleted': len(deleted)})
-    try:
-        db.log_event('moderation', 'info', 'Purge effectuée', user_id=str(interaction.user.id), user_name=str(interaction.user), channel_id=str(channel.id))
-    except Exception:
-        pass
-
-    await channel.send(embed=info_embed)
-    await interaction.followup.send(f'Purge terminée : {len(deleted)} messages supprimés.', ephemeral=True)
-
-@bot.tree.command(name='unpurge', description='Rouvre un salon précédemment verrouillé')
-@app_commands.describe(reason='Raison')
-async def unpurge(interaction: discord.Interaction, reason: Optional[str] = None):
-    if not interaction.user.guild_permissions.manage_channels:
-        await interaction.response.send_message('Permissions insuffisantes.', ephemeral=True)
-        return
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    channel = interaction.channel
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.followup.send('Cette commande ne peut être utilisée que dans un salon textuel.', ephemeral=True)
-        return
-
-    overwrite = channel.overwrites_for(interaction.guild.default_role) or discord.PermissionOverwrite()
-    overwrite.send_messages = True
-    overwrite.add_reactions = True
-    overwrite.create_public_threads = True
-    overwrite.create_private_threads = True
-    overwrite.send_messages_in_threads = True
-    await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite, reason=reason or 'Salon rouvert après unpurge')
-
-    info_embed = discord.Embed(
-        title='🔓 Salon rouvert',
-        description='Les membres peuvent à nouveau envoyer des messages.',
-        color=0x57F287,
-    )
-    if reason:
-        info_embed.add_field(name='Raison', value=reason, inline=False)
-    info_embed.set_footer(text=f'Action effectuée par {interaction.user.display_name}')
-
-    db.add_moderation_action('unpurge', str(channel.id), channel.name, str(interaction.user.id), str(interaction.user), reason or '', {})
-    try:
-        db.log_event('moderation', 'info', 'Unpurge effectué', user_id=str(interaction.user.id), user_name=str(interaction.user), channel_id=str(channel.id))
-    except Exception:
-        pass
-
-    await channel.send(embed=info_embed)
-    await interaction.followup.send('Le salon est à nouveau disponible pour les membres.', ephemeral=True)
-
-@bot.tree.command(name='trap', description='Définit un mot piégé pour mettre un membre en timeout')
-@app_commands.describe(mot='Mot piégé qui déclenche un timeout')
-async def trap(interaction: discord.Interaction, mot: str):
-    if not interaction.user.guild_permissions.manage_messages:
-        await interaction.response.send_message('Permissions insuffisantes.', ephemeral=True)
-        return
-    if interaction.guild is None:
-        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
-        return
-    trap_word = mot.strip().lower()
-    if not trap_word:
-        await interaction.response.send_message('Le mot piégé ne peut pas être vide.', ephemeral=True)
-        return
-    bot.trap_words[interaction.guild.id] = trap_word
-    try:
-        db.log_event('moderation', 'info', 'Trap configuré',
-                     user_id=str(interaction.user.id), user_name=str(interaction.user),
-                     guild_id=str(interaction.guild.id), metadata={'mot': mot})
-    except Exception:
-        pass
-    await interaction.response.send_message(
-        f"🪤 La prochaine personne qui dit `{mot}` prend 10 minutes de timeout."
-    )
-
-@bot.tree.command(name='addblacklist', description='Ajoute un mot à supprimer automatiquement')
-@app_commands.describe(mot='Mot à bloquer automatiquement')
-async def addblacklist(interaction: discord.Interaction, mot: str):
-    if interaction.guild is None:
-        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
-        return
-    if not isinstance(interaction.user, discord.Member) or not _is_privileged_member(interaction.user):
-        await interaction.response.send_message('Permissions insuffisantes.', ephemeral=True)
-        return
-    cleaned = mot.strip().lower()
-    if not cleaned:
-        await interaction.response.send_message('Le mot blacklisté ne peut pas être vide.', ephemeral=True)
-        return
-    bot.blacklist_words.setdefault(interaction.guild.id, set()).add(cleaned)
-    try:
-        db.log_event('moderation', 'info', 'Mot ajouté à la blacklist',
-                     user_id=str(interaction.user.id), user_name=str(interaction.user),
-                     guild_id=str(interaction.guild.id), metadata={'mot': cleaned})
-    except Exception:
-        pass
-    await interaction.response.send_message(f"✅ `{cleaned}` a été ajouté à la blacklist.")
-
-@bot.tree.command(name='removeblacklist', description='Retire un mot de la blacklist')
-@app_commands.describe(mot='Mot à retirer de la blacklist')
-async def removeblacklist(interaction: discord.Interaction, mot: str):
-    if interaction.guild is None:
-        await interaction.response.send_message('Cette commande doit être utilisée dans un serveur.', ephemeral=True)
-        return
-    if not isinstance(interaction.user, discord.Member) or not _is_privileged_member(interaction.user):
-        await interaction.response.send_message('Permissions insuffisantes.', ephemeral=True)
-        return
-    cleaned = mot.strip().lower()
-    guild_words = bot.blacklist_words.get(interaction.guild.id, set())
-    if cleaned not in guild_words:
-        await interaction.response.send_message(f"Le mot `{cleaned}` n'est pas dans la blacklist.", ephemeral=True)
-        return
-    guild_words.remove(cleaned)
-    try:
-        db.log_event('moderation', 'info', 'Mot retiré de la blacklist',
-                     user_id=str(interaction.user.id), user_name=str(interaction.user),
-                     guild_id=str(interaction.guild.id), metadata={'mot': cleaned})
-    except Exception:
-        pass
-    await interaction.response.send_message(f"✅ `{cleaned}` a été retiré de la blacklist.", ephemeral=True)
 
 # --- Bot Startup ---
 def run_bot():
