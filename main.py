@@ -49,6 +49,7 @@ from bot.anti_raid import AntiRaid
 from bot.slow_mode import SlowModeManager
 from bot.level_roles import sync_level_roles
 from bot.card_generator import generate_levelup_card, generate_topxp_card, generate_xp_card
+from voice_xp import voice_xp_loop, get_daily_voice_xp, reset_daily_voice_xp, VOICE_DAILY_CAP
 
 _topxp_cache: dict = {}
 _topxp_data_cache: dict = {}
@@ -187,8 +188,9 @@ async def reset_daily_xp():
         await asyncio.sleep(wait_seconds)
         global _daily_xp, _last_xp_reset
         _daily_xp = defaultdict(lambda: defaultdict(int))
-        _last_xp_reset = datetime.datetime.utcnow()
-        logger.info("Reset quotidien des XP effectué.")
+_last_xp_reset = datetime.datetime.utcnow()
+reset_daily_voice_xp()
+logger.info("Reset quotidien des XP effectué.")
 
 async def update_top1_xp_role():
     """Toutes les heures : attribue TOP1_XP_ROLE_ID au membre #1 XP
@@ -933,8 +935,9 @@ async def on_ready():
     logger.info('%s est connecté!', bot.user)
 
     bot.loop.create_task(reset_daily_xp())
-    bot.loop.create_task(update_top1_xp_role())
-    bot.loop.create_task(update_topxp_cache())
+bot.loop.create_task(update_top1_xp_role())
+bot.loop.create_task(update_topxp_cache())
+bot.loop.create_task(voice_xp_loop(bot, db, _xp_to_level, _handle_level_up, MAX_XP))
 
     for guild in bot.guilds:
         missing = [
