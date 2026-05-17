@@ -4,7 +4,7 @@ main.py — Version finale avec contrôle XP complet
 - Limite journalière : 3000 XP (reset à minuit UTC)
 - Diminishing returns : -75% après 2000 XP/jour
 - Commandes admin : /addxp, /removexp
-- Cache /topxp : 1 mois
+- Cache /topxp : 10 minutes (refresh auto en arrière-plan)
 - Logs HTTP désactivés (plus de spam Koyeb)
 - Level up : image seule (sans embed)
 - Carte XP : classement #X/Y affiché
@@ -242,6 +242,43 @@ async def update_top1_xp_role():
             logger.error("Erreur dans update_top1_xp_role: %s", exc)
 
         await asyncio.sleep(3600)  # 1 heure
+
+
+async def update_topxp_cache():
+    """Toutes les 10 minutes : régénère le cache /topxp en arrière-plan."""
+    await bot.wait_until_ready()
+    while True:
+        try:
+            for guild in bot.guilds:
+                guild_id = guild.id
+                data = db.get_top_xp(str(guild_id), limit=10)
+                if not data:
+                    continue
+                _topxp_data_cache[guild_id] = (data, datetime.datetime.utcnow())
+
+                enriched = []
+                for entry in data:
+                    user_id = entry.get('user_id')
+                    member = guild.get_member(int(user_id)) if user_id and str(user_id).isdigit() else None
+                    enriched.append({
+                        **entry,
+                        "user_name": member.display_name if member else (entry.get('user_name') or f'ID {user_id}'),
+                        "avatar_url": str(member.display_avatar.url) if member else None,
+                    })
+
+                card_buf, fname = await generate_topxp_card(
+                    guild_name=guild.name,
+                    entries=enriched,
+                    xp_to_level_fn=_xp_to_level,
+                )
+                if card_buf:
+                    _topxp_cache[guild_id] = (card_buf, fname, datetime.datetime.utcnow())
+                    logger.info("Cache /topxp régénéré pour %s", guild.name)
+
+        except Exception as exc:
+            logger.error("Erreur dans update_topxp_cache: %s", exc)
+
+        await asyncio.sleep(600)  # 10 minutes
 
 
 def _xp_required_for_next_level(level: int) -> int:
@@ -744,7 +781,7 @@ async def collect_message_stats(guild: discord.Guild, cutoff: datetime.datetime)
 async def _get_cached_topxp_data(guild_id: int) -> Optional[list]:
     now = datetime.datetime.utcnow()
     cached = _topxp_data_cache.get(guild_id)
-    if cached and (now - cached[1]).total_seconds() < 2592000:
+    if cached and (now - cached[1]).total_seconds() < 600:
         return cached[0]
     try:
         data = db.get_top_xp(str(guild_id), limit=10)
@@ -771,7 +808,7 @@ async def topxp_slash(interaction: discord.Interaction):
 
         cached = _topxp_cache.get(guild_id)
         now = datetime.datetime.utcnow()
-        if cached and (now - cached[2]).total_seconds() < 2592000:
+        if cached and (now - cached[2]).total_seconds() < 600:
             cached_buf, fname, _ = cached
             cached_buf.seek(0)
             await interaction.followup.send(file=discord.File(cached_buf, filename=fname))
@@ -897,6 +934,7 @@ async def on_ready():
 
     bot.loop.create_task(reset_daily_xp())
     bot.loop.create_task(update_top1_xp_role())
+    bot.loop.create_task(update_topxp_cache())
 
     for guild in bot.guilds:
         missing = [
