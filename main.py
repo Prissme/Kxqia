@@ -188,9 +188,9 @@ async def reset_daily_xp():
         await asyncio.sleep(wait_seconds)
         global _daily_xp, _last_xp_reset
         _daily_xp = defaultdict(lambda: defaultdict(int))
-_last_xp_reset = datetime.datetime.utcnow()
-reset_daily_voice_xp()
-logger.info("Reset quotidien des XP effectué.")
+        _last_xp_reset = datetime.datetime.utcnow()
+        reset_daily_voice_xp()
+        logger.info("Reset quotidien des XP effectué.")
 
 async def update_top1_xp_role():
     """Toutes les heures : attribue TOP1_XP_ROLE_ID au membre #1 XP
