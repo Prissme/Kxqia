@@ -938,17 +938,14 @@ async def removexp(interaction: discord.Interaction, user: discord.Member, amoun
         new_level = _xp_to_level(new_xp)
 
         if new_level < old_level:
-            await interaction.channel.send(
-                f"📉 {user.mention} est redescendu au niveau {new_level} (XP: {new_xp})."
-            )
-
-        await interaction.response.send_message(
+          await interaction.response.send_message(
             f"✅ {amount} XP retirés à {user.mention} (Nouveau total: {new_xp} XP).",
             ephemeral=True
         )
     except Exception as e:
         logger.error(f"Erreur dans /removexp: {e}")
-        await interaction.response.send_message("Une erreur est survenue.", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Une erreur est survenue.", ephemeral=True)
 
 
 @bot.event
@@ -957,11 +954,13 @@ async def on_ready():
     _ensure_background_tasks()
     logger.info('%s est connecté!', bot.user)
 
+    # Correction des indentations pour les tâches en arrière-plan
     bot.loop.create_task(reset_daily_xp())
-bot.loop.create_task(update_top1_xp_role())
-bot.loop.create_task(update_topxp_cache())
-bot.loop.create_task(voice_xp_loop(bot, db, _xp_to_level, _handle_level_up, MAX_XP))
+    bot.loop.create_task(update_top1_xp_role())
+    bot.loop.create_task(update_topxp_cache())
+    bot.loop.create_task(voice_xp_loop(bot, db, _xp_to_level, _handle_level_up, MAX_XP))
 
+    # Correction de la boucle for (Ligne 965 qui bloquait tout)
     for guild in bot.guilds:
         missing = [
             f"Niveau {lvl} (ID {rid})"
@@ -996,7 +995,6 @@ async def on_message(message: discord.Message):
     guild = message.guild
     if guild is None:
         return
-
     if isinstance(message.author, discord.Member) and not _is_privileged_member(message.author):
         lowered_content = message.content.lower()
         blocked_links = _extract_blocked_links(message.content)
