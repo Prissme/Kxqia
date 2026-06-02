@@ -81,23 +81,21 @@ DAILY_XP_REDUCTION = 0.25
 _xp_last_gain_at: dict[tuple[int, int], datetime.datetime] = {}
 _xp_react_cooldown: dict[tuple[int, int, int], datetime.datetime] = {}
 
+# Le salon Discord où envoyer le message
 ROLE_CHANNEL_ID = 1267617798658457732
+
+# Les IDs de tes 4 rôles précis
 ROLE_COMPETITIVE_ID = 1406762832720035891
-ROLE_LFN_NEWS_ID = 1455197400560832676
-ROLE_VOTES2PROFILS_ID = 1473663706100531282
-ROLE_POWER_LEAGUE_ID = 1469030334510137398
-ROLE_LADDER_ID = 1489956692816035840
-ROLE_RANKED_ID = 1489956729104891975
-ROLE_SCRIMS_ID = 1489956747555766372
-ROLE_SELECT_CUSTOM_ID = "role_selector_menu"
+ROLE_YOUTUBE_ID = 1490295112104935514
+ROLE_LFN_NEWS_ID = 1511392237324337222
+ROLE_VOTE_PROFILS_ID = 1473663706100531282
+
+# Le dictionnaire utilisé par le menu déroulant pour savoir quel rôle attribuer
 ROLE_SELECT_VALUES = {
+    "youtube": (ROLE_YOUTUBE_ID, "Youtube"),
     "competitive": (ROLE_COMPETITIVE_ID, "Competitive"),
-    "lfn_news": (ROLE_LFN_NEWS_ID, "LFN"),
-    "power_league": (ROLE_POWER_LEAGUE_ID, "Power League"),
-    "ladder": (ROLE_LADDER_ID, "Ladder"),
-    "ranked": (ROLE_RANKED_ID, "Ranked"),
-    "scrims": (ROLE_SCRIMS_ID, "Scrims"),
-    "votes2profils": (ROLE_VOTES2PROFILS_ID, "Vote de Profils"),
+    "news": (ROLE_LFN_NEWS_ID, "News"),
+    "vote2profils": (ROLE_VOTE_PROFILS_ID, "Vote 2 Profils"),
 }
 
 LEVEL_ROLES: dict[int, int] = {
@@ -652,38 +650,38 @@ async def _send_roles_message(source: str, guild: Optional[discord.Guild] = None
     if channel is None:
         try:
             channel = await bot.fetch_channel(ROLE_CHANNEL_ID)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        except Exception:
             return
 
     if not isinstance(channel, discord.TextChannel):
         return
 
-    target_guild = guild or channel.guild
-    bot_member = target_guild.me or target_guild.get_member(bot.user.id)
-    if bot_member is None:
-        return
-
-    permissions = channel.permissions_for(bot_member)
-    if not (permissions.view_channel and permissions.send_messages and permissions.embed_links):
-        return
-
+    # 1. Suppression de l'ancien message du bot pour éviter les doublons dans le salon
     try:
         async for message in channel.history(limit=50):
-            if message.author == bot.user and _message_has_role_buttons(message):
+            if message.author == bot.user and message.components:
                 await message.delete()
                 break
-    except (discord.Forbidden, discord.HTTPException):
+    except Exception:
         pass
 
-    embeds = _build_roles_embeds(target_guild)
-    view = _get_roles_view()
-    await channel.send(embeds=embeds, view=view)
-
-
-class RoleButtonsView(discord.ui.View):
-    def __init__(self, bot_instance: commands.Bot):
-        super().__init__(timeout=None)
-        self.bot = bot_instance
+    # 2. Génération de l'image via Pillow et envoi avec le menu déroulant
+    try:
+        # On appelle le générateur d'image (card_generator.py)
+        card_buf, fname = await generate_roles_card()
+        if card_buf:
+            card_buf.seek(0)
+            
+            # On prépare le fichier image pour Discord
+            file = discord.File(card_buf, filename=fname)
+            
+            # On prépare la vue (le menu déroulant créé à l'étape 4)
+            view = RoleButtonsView(bot)
+            
+            # On envoie l'image + le menu (pas de texte brut, l'image s'occupe de tout le visuel)
+            await channel.send(file=file, view=view)
+    except Exception as e:
+        logger.error(f"Erreur lors de l'envoi de la carte de rôles : {e}")
 
     async def _toggle_role(self, interaction: discord.Interaction, role_id: int, role_label: str) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
@@ -719,27 +717,52 @@ class RoleButtonsView(discord.ui.View):
             await _send_ephemeral(interaction, "Je n'ai pas la permission de modifier ce rôle.")
 
     @discord.ui.select(
-        custom_id=ROLE_SELECT_CUSTOM_ID,
-        placeholder="🎮 Choisis un rôle à activer/désactiver",
+        custom_id="role_selector_menu",
+        placeholder="🎮 Choisis tes rôles à activer/désactiver",
         min_values=1,
         max_values=1,
         options=[
-            discord.SelectOption(label="🏆 Competitive", value="competitive"),
-            discord.SelectOption(label="📰 LFN", value="lfn_news"),
-            discord.SelectOption(label="⚡ Power League", value="power_league"),
-            discord.SelectOption(label="🎯 Ladder", value="ladder"),
-            discord.SelectOption(label="🥇 Ranked", value="ranked"),
-            discord.SelectOption(label="⚔️ Scrims", value="scrims"),
-            discord.SelectOption(label="🗳️ Vote de Profils", value="votes2profils"),
+            # Option 1 : Youtube avec l'émoji personnalisé du serveur
+            discord.SelectOption(
+                label="Youtube", 
+                value="youtube", 
+                description="Activer/Désactiver le rôle Youtube",
+                emoji=discord.PartialEmoji.from_str("<:Youtube:1490296513228701768>")
+            ),
+            # Option 2 : Competitive
+            discord.SelectOption(
+                label="Competitive", 
+                value="competitive", 
+                description="Activer/Désactiver le rôle Competitive",
+                emoji="🏆"
+            ),
+            # Option 3 : News
+            discord.SelectOption(
+                label="News", 
+                value="news", 
+                description="Activer/Désactiver le rôle News",
+                emoji="📰"
+            ),
+            # Option 4 : Vote 2 Profils
+            discord.SelectOption(
+                label="Vote 2 Profils", 
+                value="vote2profils", 
+                description="Activer/Désactiver le rôle Vote 2 Profils",
+                emoji="🗳️"
+            ),
         ],
     )
     async def role_selector(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # Cette fonction se déclenche dès qu'un utilisateur clique sur le menu
         selected_value = select.values[0] if select.values else None
         role_data = ROLE_SELECT_VALUES.get(selected_value or "")
         if role_data is None:
-            await _send_ephemeral(interaction, "Rôle invalide sélectionné.")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Rôle invalide.", ephemeral=True)
             return
+            
         role_id, role_label = role_data
+        # On appelle la fonction interne existante qui gère l'attribution
         await self._toggle_role(interaction, role_id, role_label)
 
 
