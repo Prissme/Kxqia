@@ -722,3 +722,71 @@ def warmup_sync() -> None:
 async def warmup() -> None:
     """Version asynchrone du warmup."""
     await asyncio.get_event_loop().run_in_executor(None, warmup_sync)
+
+# ========================= CARTE DE RÔLES =========================
+ROLE_W, ROLE_H = 680, 370  # Taille de la carte pour accueillir les 4 rôles sans se toucher
+
+def _build_roles_frame(template: Image.Image) -> Image.Image:
+    """Génère la frame pour le choix des rôles (Youtube, Competitive, News, Vote 2 Profils)."""
+    canvas = template.copy()
+    PAD = 16
+    
+    # Création du grand rectangle style verre dépoli (comme sur tes autres cartes)
+    _glass_panel(canvas, PAD, PAD, ROLE_W - PAD * 2, ROLE_H - PAD * 2, r=20)
+    
+    draw = ImageDraw.Draw(canvas)
+    TX = PAD + 30
+    
+    # Titre principal en Sekuya
+    draw.text((TX, PAD + 18), "CHOISIS TES RÔLES", font=_font_sekuya(24), fill=GOLD)
+    
+    # Ligne de séparation sous le titre
+    sep = Image.new("RGBA", (ROLE_W, ROLE_H), (0, 0, 0, 0))
+    ImageDraw.Draw(sep).line(
+        [(TX, PAD + 54), (ROLE_W - PAD - 30, PAD + 54)],
+        fill=(*NEON, 50),
+        width=2
+    )
+    canvas.alpha_composite(sep)
+    
+    # --- Rôle 1 : Youtube ---
+    y_yt = PAD + 70
+    draw.text((TX, y_yt), "🔴", font=_font(22), fill=TEXT_PRI)
+    draw.text((TX + 40, y_yt), "Youtube", font=_font(18, bold=True), fill=TEXT_PRI)
+    draw.text((TX + 40, y_yt + 24), "Pour le contenu global lié à YouTube et aux vidéos", font=_font(13), fill=TEXT_MUT)
+    
+    # --- Rôle 2 : Competitive ---
+    y_comp = PAD + 140
+    draw.text((TX, y_comp), "🏆", font=_font(22), fill=TEXT_PRI)
+    draw.text((TX + 40, y_comp), "Competitive", font=_font(18, bold=True), fill=TEXT_PRI)
+    draw.text((TX + 40, y_comp + 24), "Pour participer ou suivre l'actualité des compétitions", font=_font(13), fill=TEXT_MUT)
+    
+    # --- Rôle 3 : News ---
+    y_news = PAD + 210
+    draw.text((TX, y_news), "📰", font=_font(22), fill=TEXT_PRI)
+    draw.text((TX + 40, y_news), "News", font=_font(18, bold=True), fill=TEXT_PRI)
+    draw.text((TX + 40, y_news + 24), "Pour recevoir toutes les annonces et nouveautés", font=_font(13), fill=TEXT_MUT)
+
+    # --- Rôle 4 : Vote 2 Profils ---
+    y_vote = PAD + 280
+    draw.text((TX, y_vote), "🗳️", font=_font(22), fill=TEXT_PRI)
+    draw.text((TX + 40, y_vote), "Vote 2 Profils", font=_font(18, bold=True), fill=TEXT_PRI)
+    draw.text((TX + 40, y_vote + 24), "Pour être notifié lors des votes de profils", font=_font(13), fill=TEXT_MUT)
+    
+    return canvas
+
+def _build_roles_card_sync() -> io.BytesIO:
+    """Version interne pour préparer le fond et appliquer l'overlay sombre."""
+    # On prend la première frame de ton fond pour en faire une image fixe propre
+    templates, _ = _load_bg_frames(ROLE_W, ROLE_H, max_frames=1)
+    canvas = templates[0].copy()
+    _dark_overlay(canvas, OVERLAY_ALPHA)
+    
+    final_image = _build_roles_frame(canvas)
+    return _encode_output([final_image])
+
+async def generate_roles_card() -> Tuple[io.BytesIO, str]:
+    """C'est cette fonction que main.py va appeler pour récupérer l'image finale."""
+    loop = asyncio.get_event_loop()
+    buf = await loop.run_in_executor(None, _build_roles_card_sync)
+    return buf, "role_card.png"
