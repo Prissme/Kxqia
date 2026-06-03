@@ -34,11 +34,10 @@ _FONT_DIR.mkdir(parents=True, exist_ok=True)
 
 _NOTO_PATH = _FONT_DIR / "NotoSans-Regular.ttf"
 _NOTO_BOLD = _FONT_DIR / "NotoSans-Bold.ttf"
-_SEKUYA_PATH = _FONT_DIR / "Sekuya-Regular.ttf"
+_SEKUYA_PATH = _ROOT / "fonts" / "Sekuya-Regular.ttf"
 _NOTO_URL = "https://github.com/openmaptiles/fonts/raw/master/noto-sans/NotoSans-Regular.ttf"
 _NOTO_BOLD_URL = "https://github.com/openmaptiles/fonts/raw/master/noto-sans/NotoSans-Bold.ttf"
-# Sekuya via Google Fonts static URL
-_SEKUYA_URL = "https://fonts.gstatic.com/s/sekuya/v3/6xK_dThFKcWIqifdKh4lgg.ttf"
+_SEKUYA_URL = ""
 
 # Dimensions
 XP_W, XP_H = 680, 200
@@ -88,7 +87,7 @@ def _ensure_fonts() -> None:
     if not _NOTO_BOLD.exists():
         _dl(_NOTO_BOLD_URL, _NOTO_BOLD)
     if not _SEKUYA_PATH.exists():
-        _dl(_SEKUYA_URL, _SEKUYA_PATH)
+        logger.warning("Police Sekuya introuvable à %s", _SEKUYA_PATH)
     _fonts_loaded = True
 
 
