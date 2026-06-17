@@ -77,7 +77,13 @@ class Config:
             'roleDeleteLimit': 5,
             'banLimit': 10,
             'webhookCreateLimit': 3,
+            'channelUpdateLimit': 3,
+            'globalActionLimit': 4,
+            'botActionLimit': 1,
+            'auditLogMaxAge': 15,
             'punitiveAction': 'strip',
+            'botPunitiveAction': 'ban',
+            'protectBots': True,
             'allowOwner': True,
         }
 
@@ -150,12 +156,21 @@ def _normalize_nuke(data: Any) -> dict[str, Any]:
     punitive_action = str(data.get('punitiveAction', default['punitiveAction'])).lower()
     if punitive_action not in {'strip', 'ban'}:
         punitive_action = default['punitiveAction']
+    bot_punitive_action = str(data.get('botPunitiveAction', default['botPunitiveAction'])).lower()
+    if bot_punitive_action not in {'strip', 'ban'}:
+        bot_punitive_action = default['botPunitiveAction']
     return {
         'timeWindow': max(5, _to_int(data.get('timeWindow'), default['timeWindow'])),
         'channelDeleteLimit': max(1, _to_int(data.get('channelDeleteLimit'), default['channelDeleteLimit'])),
         'roleDeleteLimit': max(1, _to_int(data.get('roleDeleteLimit'), default['roleDeleteLimit'])),
         'banLimit': max(1, _to_int(data.get('banLimit'), default['banLimit'])),
         'webhookCreateLimit': max(1, _to_int(data.get('webhookCreateLimit'), default['webhookCreateLimit'])),
+        'channelUpdateLimit': max(1, _to_int(data.get('channelUpdateLimit'), default['channelUpdateLimit'])),
+        'globalActionLimit': max(1, _to_int(data.get('globalActionLimit'), default['globalActionLimit'])),
+        'botActionLimit': max(1, _to_int(data.get('botActionLimit'), default['botActionLimit'])),
+        'auditLogMaxAge': max(5, _to_int(data.get('auditLogMaxAge'), default['auditLogMaxAge'])),
         'punitiveAction': punitive_action,
+        'botPunitiveAction': bot_punitive_action,
+        'protectBots': bool(data.get('protectBots', default['protectBots'])),
         'allowOwner': bool(data.get('allowOwner', default['allowOwner'])),
     }

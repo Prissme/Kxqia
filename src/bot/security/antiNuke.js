@@ -23,12 +23,16 @@ export class AntiNuke {
       const entry = logs.entries.first();
       if (!entry) return;
       const executor = entry.executor;
-      if (!executor || executor.bot) return;
+      if (!executor || executor.id === this.client.user?.id) return;
 
-      const trust = getTrustLevels();
-      if (isTrusted(executor.id, trust)) return;
+      const config = getConfig();
+      const protectBots = config.nuke.protectBots !== false;
+      if (!executor.bot || !protectBots) {
+        const trust = getTrustLevels();
+        if (isTrusted(executor.id, trust)) return;
+      }
 
-      this.bumpAndCheck(guild, executor, action);
+      this.bumpAndCheck(guild, executor, action, config);
     } catch (err) {
       console.error("AntiNuke error", err);
     }
@@ -49,16 +53,11 @@ export class AntiNuke {
     }
   }
 
-  bumpAndCheck(guild, executor, action) {
-    const config = getConfig();
-    const key = `${guild.id}:${executor.id}:${action}`;
+  bumpAndCheck(guild, executor, action, config = getConfig()) {
     const now = Date.now();
     const windowMs = (config.nuke.timeWindow || 30) * 1000;
-
-    const bucket = this.actionBuckets.get(key) || [];
-    const fresh = bucket.filter((ts) => now - ts < windowMs);
-    fresh.push(now);
-    this.actionBuckets.set(key, fresh);
+    const fresh = this.bumpBucket(`${guild.id}:${executor.id}:${action}`, now, windowMs);
+    const globalFresh = this.bumpBucket(`${guild.id}:${executor.id}:global`, now, windowMs);
 
     const limits = {
       [ACTION_TYPES.channelDelete]: config.nuke.channelDeleteLimit,
@@ -67,15 +66,38 @@ export class AntiNuke {
       [ACTION_TYPES.webhook]: config.nuke.webhookCreateLimit
     };
 
-    if (fresh.length >= (limits[action] || Infinity)) {
+    const protectBots = config.nuke.protectBots !== false;
+    const actionLimit = executor.bot && protectBots
+      ? Math.min(limits[action] || 1, config.nuke.botActionLimit || 1)
+      : limits[action];
+    const globalLimit = executor.bot && protectBots
+      ? Math.min(config.nuke.globalActionLimit || 4, config.nuke.botActionLimit || 1)
+      : config.nuke.globalActionLimit;
+
+    if (fresh.length >= (actionLimit || Infinity) || globalFresh.length >= (globalLimit || Infinity)) {
       recordStat("nukeAlerts");
       pushEvent({
         type: "nuke",
         guildId: guild.id,
-        message: `${executor.tag} exceeded ${action} limit (${fresh.length}/${limits[action]})`
+        message: `${executor.tag} exceeded ${action} limit (${fresh.length}/${actionLimit || limits[action]})`
       });
-      this.logger(guild.id, `🚫 Nuke prevented: ${executor.tag} exceeded ${action} limit (${fresh.length}/${limits[action]}).`);
+      this.logger(guild.id, `🚫 Nuke prevented: ${executor.tag} exceeded ${action} limit (${fresh.length}/${actionLimit || limits[action]}).`);
       this.applyPunishment(guild, executor, config);
+      this.clearExecutorBuckets(guild.id, executor.id);
+    }
+  }
+
+  bumpBucket(key, now, windowMs) {
+    const bucket = this.actionBuckets.get(key) || [];
+    const fresh = bucket.filter((ts) => now - ts < windowMs);
+    fresh.push(now);
+    this.actionBuckets.set(key, fresh);
+    return fresh;
+  }
+
+  clearExecutorBuckets(guildId, executorId) {
+    for (const key of this.actionBuckets.keys()) {
+      if (key.startsWith(`${guildId}:${executorId}:`)) this.actionBuckets.delete(key);
     }
   }
 
@@ -83,9 +105,14 @@ export class AntiNuke {
     const member = await guild.members.fetch(executor.id).catch(() => null);
     if (!member) return;
 
-    if (config.nuke.punitiveAction === "ban") {
-      await member.ban({ reason: "Anti-nuke trigger" }).catch(() => {});
-      return;
+    const action = executor.bot ? (config.nuke.botPunitiveAction || "ban") : config.nuke.punitiveAction;
+    if (action === "ban") {
+      const banned = await member.ban({ reason: executor.bot ? "Anti-nuke bot trigger" : "Anti-nuke trigger" }).then(() => true).catch(() => false);
+      if (banned) return;
+      if (executor.bot) {
+        const kicked = await member.kick("Anti-nuke bot trigger").then(() => true).catch(() => false);
+        if (kicked) return;
+      }
     }
 
     // default: strip dangerous permissions by removing elevated roles

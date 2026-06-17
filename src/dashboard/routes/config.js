@@ -53,8 +53,15 @@ export default function configRouter(client) {
         roleDeleteLimit: Number(body.roleDeleteLimit),
         banLimit: Number(body.banLimit),
         webhookCreateLimit: Number(body.webhookCreateLimit),
+        channelUpdateLimit: Number(body.channelUpdateLimit || 3),
+        globalActionLimit: Number(body.globalActionLimit || 4),
+        botActionLimit: Number(body.botActionLimit || 1),
+        auditLogMaxAge: Number(body.auditLogMaxAge || 15),
         timeWindow: Number(body.timeWindow),
-        punitiveAction: body.punitiveAction
+        punitiveAction: body.punitiveAction,
+        botPunitiveAction: body.botPunitiveAction || "ban",
+        protectBots: body.protectBots !== "off",
+        allowOwner: body.allowOwner !== "off"
       }
     });
     res.redirect("/dashboard/config");
