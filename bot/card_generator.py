@@ -13,6 +13,7 @@ import asyncio
 import io
 import logging
 import os
+import shutil
 import urllib.request
 from functools import partial
 from pathlib import Path
@@ -34,10 +35,15 @@ _FONT_DIR.mkdir(parents=True, exist_ok=True)
 
 _NOTO_PATH = _FONT_DIR / "NotoSans-Regular.ttf"
 _NOTO_BOLD = _FONT_DIR / "NotoSans-Bold.ttf"
-_SEKUYA_PATH = _ROOT / "fonts" / "Sekuya-Regular.ttf"
+_SEKUYA_ENV_PATH = os.getenv("SEKUYA_FONT_PATH", "").strip()
+_SEKUYA_CANDIDATES = [
+    Path(_SEKUYA_ENV_PATH) if _SEKUYA_ENV_PATH else None,
+    _ROOT / "fonts" / "Sekuya-Regular.ttf",
+    Path.cwd() / "fonts" / "Sekuya-Regular.ttf",
+    Path(__file__).parent / "fonts" / "Sekuya-Regular.ttf",
+]
 _NOTO_URL = "https://github.com/openmaptiles/fonts/raw/master/noto-sans/NotoSans-Regular.ttf"
 _NOTO_BOLD_URL = "https://github.com/openmaptiles/fonts/raw/master/noto-sans/NotoSans-Bold.ttf"
-_SEKUYA_URL = ""
 
 # Dimensions
 XP_W, XP_H = 680, 200
@@ -78,6 +84,17 @@ def _dl(url: str, dest: Path) -> bool:
         return False
 
 
+def _resolve_sekuya_path() -> Optional[Path]:
+    for candidate in _SEKUYA_CANDIDATES:
+        if candidate and candidate.exists():
+            return candidate
+
+    system_font = shutil.which("Sekuya-Regular.ttf") or shutil.which("Sekuya.ttf")
+    if system_font:
+        return Path(system_font)
+    return None
+
+
 def _ensure_fonts() -> None:
     global _fonts_loaded
     if _fonts_loaded:
@@ -86,8 +103,11 @@ def _ensure_fonts() -> None:
         _dl(_NOTO_URL, _NOTO_PATH)
     if not _NOTO_BOLD.exists():
         _dl(_NOTO_BOLD_URL, _NOTO_BOLD)
-    if not _SEKUYA_PATH.exists():
-        logger.warning("Police Sekuya introuvable à %s", _SEKUYA_PATH)
+    if _resolve_sekuya_path() is None:
+        logger.warning(
+            "Police Sekuya introuvable. Placez-la dans fonts/Sekuya-Regular.ttf "
+            "ou définissez SEKUYA_FONT_PATH."
+        )
     _fonts_loaded = True
 
 
@@ -106,18 +126,19 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 
 def _font_sekuya(size: int) -> ImageFont.FreeTypeFont:
-    """Police Sekuya pour les titres majeurs (LEVEL UP!, CLASSEMENT, etc.)"""
+    """Police Sekuya pour les titres majeurs (LEVEL UP!, CLASSEMENT, etc.)."""
     key = ("sekuya", size)
     if key in _font_cache:
         return _font_cache[key]
     _ensure_fonts()
-    if _SEKUYA_PATH.exists():
+    sekuya_path = _resolve_sekuya_path()
+    if sekuya_path is not None:
         try:
-            f = ImageFont.truetype(str(_SEKUYA_PATH), size)
+            f = ImageFont.truetype(str(sekuya_path), size)
             _font_cache[key] = f
             return f
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Police Sekuya illisible (%s) : %s", sekuya_path, exc)
     # Fallback vers NotoSans-Bold si Sekuya non disponible
     f = _font(size, bold=True)
     _font_cache[key] = f
@@ -725,6 +746,16 @@ async def warmup() -> None:
 # ========================= CARTE DE RÔLES =========================
 ROLE_W, ROLE_H = 680, 370  # Taille de la carte pour accueillir les 4 rôles sans se toucher
 
+
+def _draw_role_badge(draw: ImageDraw.ImageDraw, x: int, y: int, label: str, color: Tuple[int, int, int]) -> None:
+    """Dessine un badge texte sans emoji pour éviter les glyphes manquants dans Pillow."""
+    draw.rounded_rectangle((x, y, x + 28, y + 28), radius=8, fill=(*color, 55), outline=(*color, 180), width=2)
+    bbox = draw.textbbox((0, 0), label, font=_font_sekuya(14))
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    draw.text((x + (28 - text_w) / 2, y + (28 - text_h) / 2 - 1), label, font=_font_sekuya(14), fill=TEXT_PRI)
+
+
 def _build_roles_frame(template: Image.Image) -> Image.Image:
     """Génère la frame pour le choix des rôles (Youtube, Competitive, News, Vote 2 Profils)."""
     canvas = template.copy()
@@ -748,29 +779,17 @@ def _build_roles_frame(template: Image.Image) -> Image.Image:
     )
     canvas.alpha_composite(sep)
     
-    # --- Rôle 1 : Youtube ---
-    y_yt = PAD + 70
-    draw.text((TX, y_yt), "🔴", font=_font(22), fill=TEXT_PRI)
-    draw.text((TX + 40, y_yt), "Youtube", font=_font(18, bold=True), fill=TEXT_PRI)
-    draw.text((TX + 40, y_yt + 24), "Pour le contenu global lié à YouTube et aux vidéos", font=_font(13), fill=TEXT_MUT)
-    
-    # --- Rôle 2 : Competitive ---
-    y_comp = PAD + 140
-    draw.text((TX, y_comp), "🏆", font=_font(22), fill=TEXT_PRI)
-    draw.text((TX + 40, y_comp), "Competitive", font=_font(18, bold=True), fill=TEXT_PRI)
-    draw.text((TX + 40, y_comp + 24), "Pour participer ou suivre l'actualité des compétitions", font=_font(13), fill=TEXT_MUT)
-    
-    # --- Rôle 3 : News ---
-    y_news = PAD + 210
-    draw.text((TX, y_news), "📰", font=_font(22), fill=TEXT_PRI)
-    draw.text((TX + 40, y_news), "News", font=_font(18, bold=True), fill=TEXT_PRI)
-    draw.text((TX + 40, y_news + 24), "Pour recevoir toutes les annonces et nouveautés", font=_font(13), fill=TEXT_MUT)
+    roles = [
+        (PAD + 70, "YT", "Youtube", "Pour le contenu global lié à YouTube et aux vidéos", (230, 45, 45)),
+        (PAD + 140, "CP", "Competitive", "Pour participer ou suivre l'actualité des compétitions", GOLD),
+        (PAD + 210, "NW", "News", "Pour recevoir toutes les annonces et nouveautés", NEON),
+        (PAD + 280, "V2", "Vote 2 Profils", "Pour être notifié lors des votes de profils", VIOLET),
+    ]
 
-    # --- Rôle 4 : Vote 2 Profils ---
-    y_vote = PAD + 280
-    draw.text((TX, y_vote), "🗳️", font=_font(22), fill=TEXT_PRI)
-    draw.text((TX + 40, y_vote), "Vote 2 Profils", font=_font(18, bold=True), fill=TEXT_PRI)
-    draw.text((TX + 40, y_vote + 24), "Pour être notifié lors des votes de profils", font=_font(13), fill=TEXT_MUT)
+    for y, badge, title, description, color in roles:
+        _draw_role_badge(draw, TX, y, badge, color)
+        draw.text((TX + 44, y - 2), title.upper(), font=_font_sekuya(18), fill=TEXT_PRI)
+        draw.text((TX + 44, y + 25), description, font=_font(13), fill=TEXT_MUT)
     
     return canvas
 

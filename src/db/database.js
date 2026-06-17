@@ -45,7 +45,13 @@ function read() {
   return {
     ...defaultData,
     ...parsed,
-    config: { ...defaultData.config, ...(parsed.config || {}) },
+    config: {
+      ...defaultData.config,
+      ...(parsed.config || {}),
+      slowMode: { ...defaultData.config.slowMode, ...(parsed.config?.slowMode || {}) },
+      raid: { ...defaultData.config.raid, ...(parsed.config?.raid || {}) },
+      nuke: { ...defaultData.config.nuke, ...(parsed.config?.nuke || {}) }
+    },
     trust: parsed.trust || {},
     stats: {
       ...defaultData.stats,

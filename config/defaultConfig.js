@@ -22,8 +22,14 @@ export default {
     roleDeleteLimit: 5,
     banLimit: 10,
     webhookCreateLimit: 3,
+    channelUpdateLimit: 3,
+    globalActionLimit: 4,
+    botActionLimit: 1,
+    auditLogMaxAge: 15,
     timeWindow: 30, // seconds
     punitiveAction: "strip", // strip roles or ban
+    botPunitiveAction: "ban", // bots that nuke are banned/kicked by default
+    protectBots: true,
     allowOwner: true
   }
 };

@@ -30,8 +30,14 @@ const nukeSchema = z.object({
   roleDeleteLimit: z.number().int().min(1).max(50),
   banLimit: z.number().int().min(1).max(100),
   webhookCreateLimit: z.number().int().min(1).max(50),
+  channelUpdateLimit: z.number().int().min(1).max(50).default(3),
+  globalActionLimit: z.number().int().min(1).max(100).default(4),
+  botActionLimit: z.number().int().min(1).max(10).default(1),
+  auditLogMaxAge: z.number().int().min(5).max(120).default(15),
   timeWindow: z.number().int().min(10).max(300),
   punitiveAction: z.enum(["strip", "ban"]),
+  botPunitiveAction: z.enum(["strip", "ban"]).default("ban"),
+  protectBots: z.boolean().default(true),
   allowOwner: z.boolean()
 });
 

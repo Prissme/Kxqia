@@ -1251,11 +1251,14 @@ async def security_check(ctx: commands.Context):
         ("Anti-raid activé", bool(raid_cfg)),
         ("Seuil suppression salons", int(nuke_cfg.get('channelDeleteLimit', 3)) > 0),
         ("Seuil suppression rôles", int(nuke_cfg.get('roleDeleteLimit', 5)) > 0),
+        ("Protection bot nuke", bool(nuke_cfg.get('protectBots', True))),
+        ("Seuil global anti-nuke", int(nuke_cfg.get('globalActionLimit', 4)) > 0),
         ("Seuil joins raid", int(raid_cfg.get('joinThreshold', 10)) > 0),
         ("Âge min compte (jours)", int(raid_cfg.get('accountAgeDays', 7)) >= 1),
     ]
     lines = [f"{'✅' if ok else '⚠️'} {label}" for label, ok in checks]
     lines.append(f"• Action punitive anti-nuke: `{nuke_cfg.get('punitiveAction', 'strip')}`")
+    lines.append(f"• Action bot nuke: `{nuke_cfg.get('botPunitiveAction', 'ban')}` dès `{nuke_cfg.get('botActionLimit', 1)}` action")
     lines.append(f"• Lockdown auto anti-raid: `{raid_cfg.get('lockdownOnRaid', True)}`")
     lines.append(f"• Kick comptes récents: `{raid_cfg.get('kickYoungAccounts', False)}`")
     embed = discord.Embed(
