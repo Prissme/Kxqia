@@ -56,6 +56,12 @@ export default {
     } else if (interaction.commandName === "trap") {
       const word = interaction.options.getString("mot");
       await interaction.client.security.trap.handleCommand(interaction, word);
+    } else if (interaction.commandName === "blacklist") {
+      const word = interaction.options.getString("mot");
+      await interaction.client.security.trap.handleBlacklistCommand(interaction, word);
+    } else if (interaction.commandName === "removeblacklist") {
+      const word = interaction.options.getString("mot");
+      await interaction.client.security.trap.handleRemoveBlacklistCommand(interaction, word);
     } else if (interaction.commandName === "ticket") {
       const { handleTicketCommand } = await import("../tickets.js");
       await handleTicketCommand(interaction);
