@@ -116,7 +116,20 @@ TOP1_XP_ROLE_ID = 1505229721825316915
 URL_REGEX = re.compile(r"(https?://[^\s]+|www\.[^\s]+)", re.IGNORECASE)
 DISCORD_INVITE_REGEX = re.compile(r"(?:https?://)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/\S+", re.IGNORECASE)
 ALLOWED_VIDEO_DOMAINS = ("youtube.com", "youtu.be", "tiktok.com")
-ALLOWED_GIF_DOMAINS = ("tenor.com", "giphy.com", "discordapp.com", "discord.com")
+ALLOWED_GIF_DOMAINS = (
+    "tenor.com",
+    "giphy.com",
+    "klipy.com",
+    "klipy.co",
+    "klipy.io",
+    "klipy.app",
+    "klipy.cloud",
+    "klipy-cdn.com",
+    "discordapp.com",
+    "discord.com",
+    "media.discordapp.net",
+    "cdn.discordapp.com",
+)
 
 start_time = datetime.datetime.utcnow()
 
