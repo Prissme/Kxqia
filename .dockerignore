@@ -6,11 +6,6 @@ __pycache__/
 .git/
 .gitignore
 
-*.png
-*.gif
-*.jpg
-
 tmp/
 cache/
-fonts/
 .env
