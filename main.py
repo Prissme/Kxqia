@@ -641,31 +641,31 @@ async def _send_roles_message(source: str, guild: Optional[discord.Guild] = None
             view = RoleButtonsView(bot)
 
             embed = discord.Embed(
-                title="🎭 Sélection des rôles",
+                title="🎭 Role Selection",
                 description=(
-                    "Utilise le menu ci-dessous pour activer ou désactiver tes rôles.\n"
-                    "Un clic suffit — le rôle est ajouté ou retiré instantanément."
+                    "Use the menu below to toggle your roles.\n"
+                    "One click is enough — the role is added or removed instantly."
                 ),
                 color=0x5865F2,
             )
             embed.add_field(
                 name="<:Youtube:1490296513228701768> Youtube",
-                value="Notifications liées aux vidéos YouTube.",
+                value=f"<@&{ROLE_YOUTUBE_ID}> — YouTube content notifications.",
                 inline=True,
             )
             embed.add_field(
                 name="🏆 Competitive",
-                value="Suivi de l'actualité compétitive.",
+                value=f"<@&{ROLE_COMPETITIVE_ID}> — Competitive scene updates.",
                 inline=True,
             )
             embed.add_field(
                 name="📰 News",
-                value="Annonces et nouveautés du serveur.",
+                value=f"<@&{ROLE_LFN_NEWS_ID}> — Server announcements & news.",
                 inline=True,
             )
             embed.add_field(
                 name="🗳️ Vote 2 Profils",
-                value="Notifications lors des votes de profils.",
+                value=f"<@&{ROLE_VOTE_PROFILS_ID}> — Profile vote notifications.",
                 inline=True,
             )
             embed.set_image(url=f"attachment://{fname}")
@@ -682,65 +682,65 @@ class RoleButtonsView(discord.ui.View):
 
     async def _toggle_role(self, interaction: discord.Interaction, role_id: int, role_label: str) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            await _send_ephemeral(interaction, "Cette action doit être utilisée dans un serveur.")
+            await _send_ephemeral(interaction, "This action must be used in a server.")
             return
 
         guild = interaction.guild
         role = guild.get_role(role_id)
         if role is None:
-            await _send_ephemeral(interaction, f"Le rôle **{role_label}** est introuvable.")
+            await _send_ephemeral(interaction, f"Role **{role_label}** not found.")
             return
 
         bot_member = guild.me or guild.get_member(self.bot.user.id)
         if bot_member is None:
-            await _send_ephemeral(interaction, "Impossible de vérifier les permissions du bot.")
+            await _send_ephemeral(interaction, "Unable to verify bot permissions.")
             return
         if not bot_member.guild_permissions.manage_roles:
-            await _send_ephemeral(interaction, "Je n'ai pas la permission de gérer les rôles.")
+            await _send_ephemeral(interaction, "I don't have permission to manage roles.")
             return
         if role.managed or role >= bot_member.top_role:
-            await _send_ephemeral(interaction, "Je ne peux pas attribuer ce rôle (hiérarchie Discord).")
+            await _send_ephemeral(interaction, "I can't assign this role (Discord hierarchy).")
             return
 
         member = interaction.user
         try:
             if role in member.roles:
-                await member.remove_roles(role, reason="Retrait via menu de rôles")
-                await _send_ephemeral(interaction, f"✅ Rôle {role.mention} retiré.")
+                await member.remove_roles(role, reason="Removed via role menu")
+                await _send_ephemeral(interaction, f"✅ Role {role.mention} removed.")
             else:
-                await member.add_roles(role, reason="Ajout via menu de rôles")
-                await _send_ephemeral(interaction, f"✨ Rôle {role.mention} ajouté.")
+                await member.add_roles(role, reason="Added via role menu")
+                await _send_ephemeral(interaction, f"✨ Role {role.mention} added.")
         except (discord.Forbidden, discord.HTTPException):
-            await _send_ephemeral(interaction, "Je n'ai pas la permission de modifier ce rôle.")
+            await _send_ephemeral(interaction, "I don't have permission to modify this role.")
 
     @discord.ui.select(
         custom_id="role_selector_menu",
-        placeholder="🎮 Choisis tes rôles à activer/désactiver",
+        placeholder="Select your roles",
         min_values=1,
         max_values=1,
         options=[
             discord.SelectOption(
                 label="Youtube",
                 value="youtube",
-                description="Activer/Désactiver le rôle Youtube",
+                description="Toggle the Youtube role",
                 emoji=discord.PartialEmoji.from_str("<:Youtube:1490296513228701768>")
             ),
             discord.SelectOption(
                 label="Competitive",
                 value="competitive",
-                description="Activer/Désactiver le rôle Competitive",
+                description="Toggle the Competitive role",
                 emoji="🏆"
             ),
             discord.SelectOption(
                 label="News",
                 value="news",
-                description="Activer/Désactiver le rôle News",
+                description="Toggle the News role",
                 emoji="📰"
             ),
             discord.SelectOption(
                 label="Vote 2 Profils",
                 value="vote2profils",
-                description="Activer/Désactiver le rôle Vote 2 Profils",
+                description="Toggle the Vote 2 Profils role",
                 emoji="🗳️"
             ),
         ],
@@ -749,7 +749,7 @@ class RoleButtonsView(discord.ui.View):
         selected_value = select.values[0] if select.values else None
         role_data = ROLE_SELECT_VALUES.get(selected_value or "")
         if role_data is None:
-            await _send_ephemeral(interaction, "Rôle invalide.")
+            await _send_ephemeral(interaction, "Invalid role.")
             return
         role_id, role_label = role_data
         await self._toggle_role(interaction, role_id, role_label)
