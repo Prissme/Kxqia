@@ -757,40 +757,43 @@ def _draw_role_badge(draw: ImageDraw.ImageDraw, x: int, y: int, label: str, colo
 
 
 def _build_roles_frame(template: Image.Image) -> Image.Image:
-    """Génère la frame pour le choix des rôles (Youtube, Competitive, News, Vote 2 Profils)."""
+    """Génère la frame pour le choix des rôles — titre PRISSME TV + ROLES."""
     canvas = template.copy()
     PAD = 16
-    
-    # Création du grand rectangle style verre dépoli (comme sur tes autres cartes)
+
+    # Verre dépoli couvrant toute la carte
     _glass_panel(canvas, PAD, PAD, ROLE_W - PAD * 2, ROLE_H - PAD * 2, r=20)
-    
+
     draw = ImageDraw.Draw(canvas)
-    TX = PAD + 30
-    
-    # Titre principal en Sekuya
-    draw.text((TX, PAD + 18), "CHOISIS TES RÔLES", font=_font_sekuya(24), fill=GOLD)
-    
-    # Ligne de séparation sous le titre
+
+    # ── PRISSME TV (très grand, centré, couleur GOLD) ──────────────────────
+    title_font = _font_sekuya(62)
+    title_text = "PRISSME TV"
+    bbox_t = draw.textbbox((0, 0), title_text, font=title_font)
+    title_w = bbox_t[2] - bbox_t[0]
+    title_x = (ROLE_W - title_w) // 2
+    title_y = PAD + 22
+    draw.text((title_x, title_y), title_text, font=title_font, fill=GOLD)
+
+    # ── ROLES (moyen, centré, couleur NEON) ──────────────────────────────
+    sub_font = _font_sekuya(28)
+    sub_text = "ROLES"
+    bbox_s = draw.textbbox((0, 0), sub_text, font=sub_font)
+    sub_w = bbox_s[2] - bbox_s[0]
+    sub_x = (ROLE_W - sub_w) // 2
+    sub_y = title_y + (bbox_t[3] - bbox_t[1]) + 6
+    draw.text((sub_x, sub_y), sub_text, font=sub_font, fill=NEON)
+
+    # ── Ligne de séparation ───────────────────────────────────────────────
+    sep_y = sub_y + (bbox_s[3] - bbox_s[1]) + 14
     sep = Image.new("RGBA", (ROLE_W, ROLE_H), (0, 0, 0, 0))
     ImageDraw.Draw(sep).line(
-        [(TX, PAD + 54), (ROLE_W - PAD - 30, PAD + 54)],
-        fill=(*NEON, 50),
-        width=2
+        [(PAD + 30, sep_y), (ROLE_W - PAD - 30, sep_y)],
+        fill=(*NEON, 55),
+        width=2,
     )
     canvas.alpha_composite(sep)
-    
-    roles = [
-        (PAD + 70, "YT", "Youtube", "Pour le contenu global lié à YouTube et aux vidéos", (230, 45, 45)),
-        (PAD + 140, "CP", "Competitive", "Pour participer ou suivre l'actualité des compétitions", GOLD),
-        (PAD + 210, "NW", "News", "Pour recevoir toutes les annonces et nouveautés", NEON),
-        (PAD + 280, "V2", "Vote 2 Profils", "Pour être notifié lors des votes de profils", VIOLET),
-    ]
 
-    for y, badge, title, description, color in roles:
-        _draw_role_badge(draw, TX, y, badge, color)
-        draw.text((TX + 44, y - 2), title.upper(), font=_font_sekuya(18), fill=TEXT_PRI)
-        draw.text((TX + 44, y + 25), description, font=_font(13), fill=TEXT_MUT)
-    
     return canvas
 
 def _build_roles_card_sync() -> io.BytesIO:
