@@ -639,7 +639,38 @@ async def _send_roles_message(source: str, guild: Optional[discord.Guild] = None
             card_buf.seek(0)
             file = discord.File(card_buf, filename=fname)
             view = RoleButtonsView(bot)
-            await channel.send(file=file, view=view)
+
+            embed = discord.Embed(
+                title="🎭 Sélection des rôles",
+                description=(
+                    "Utilise le menu ci-dessous pour activer ou désactiver tes rôles.\n"
+                    "Un clic suffit — le rôle est ajouté ou retiré instantanément."
+                ),
+                color=0x5865F2,
+            )
+            embed.add_field(
+                name="<:Youtube:1490296513228701768> Youtube",
+                value="Notifications liées aux vidéos YouTube.",
+                inline=True,
+            )
+            embed.add_field(
+                name="🏆 Competitive",
+                value="Suivi de l'actualité compétitive.",
+                inline=True,
+            )
+            embed.add_field(
+                name="📰 News",
+                value="Annonces et nouveautés du serveur.",
+                inline=True,
+            )
+            embed.add_field(
+                name="🗳️ Vote 2 Profils",
+                value="Notifications lors des votes de profils.",
+                inline=True,
+            )
+            embed.set_image(url=f"attachment://{fname}")
+
+            await channel.send(file=file, embed=embed, view=view)
     except Exception as e:
         logger.error(f"Erreur lors de l'envoi de la carte de rôles : {e}")
 
