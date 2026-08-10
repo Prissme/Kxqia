@@ -926,8 +926,7 @@ async def removexp(interaction: discord.Interaction, user: discord.Member, amoun
         old_level = _xp_to_level(current_xp)
         new_level = _xp_to_level(new_xp)
 
-        if new_level < old_level:
-          await interaction.response.send_message(
+        await interaction.response.send_message(
             f"✅ {amount} XP retirés à {user.mention} (Nouveau total: {new_xp} XP).",
             ephemeral=True
         )
@@ -935,6 +934,67 @@ async def removexp(interaction: discord.Interaction, user: discord.Member, amoun
         logger.error(f"Erreur dans /removexp: {e}")
         if not interaction.response.is_done():
             await interaction.response.send_message("Une erreur est survenue.", ephemeral=True)
+
+
+class ResetXPConfirmView(discord.ui.View):
+    """Vue de confirmation pour le reset complet de l'XP du serveur (action irréversible)."""
+
+    def __init__(self, author_id: int, guild_id: str):
+        super().__init__(timeout=30)
+        self.author_id = author_id
+        self.guild_id = guild_id
+        self.confirmed = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Seule la personne ayant lancé la commande peut confirmer.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label='Confirmer le reset', style=discord.ButtonStyle.danger, emoji='⚠️')
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = True
+        for child in self.children:
+            child.disabled = True
+
+        try:
+            removed = db.reset_guild_xp(self.guild_id)
+            _daily_xp.pop(interaction.guild.id, None)
+            await interaction.response.edit_message(
+                content=f"✅ XP réinitialisée pour tout le serveur ({removed} membre(s) concerné(s)).",
+                view=self
+            )
+        except Exception as e:
+            logger.error(f"Erreur dans /resetxp (confirm): {e}")
+            await interaction.response.edit_message(content="Une erreur est survenue.", view=self)
+
+        self.stop()
+
+    @discord.ui.button(label='Annuler', style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Reset annulé.", view=self)
+        self.stop()
+
+
+@bot.tree.command(name='resetxp', description="Réinitialise l'XP de TOUT le serveur (irréversible)")
+@app_commands.checks.has_permissions(administrator=True)
+async def resetxp(interaction: discord.Interaction):
+    guild_id_str = str(interaction.guild.id)
+    view = ResetXPConfirmView(author_id=interaction.user.id, guild_id=guild_id_str)
+    await interaction.response.send_message(
+        "⚠️ Cette action va **réinitialiser l'XP de tous les membres** de ce serveur. "
+        "Cette opération est **irréversible**. Confirmer ?",
+        view=view,
+        ephemeral=True
+    )
 
 
 @bot.event
@@ -1381,6 +1441,7 @@ async def help_admin(interaction: discord.Interaction):
         value=(
             "`/addxp [user] [amount]` — Ajoute de l'XP (ignore les limites)\n"
             "`/removexp [user] [amount]` — Retire de l'XP (min 0)\n"
+            "`/resetxp` — Réinitialise l'XP de tout le serveur (irréversible)\n"
             "`!syncroles` — Synchronise les rôles de niveau\n"
             "`/setup_roles` — Relancer l'embed de sélection des rôles"
         ),
