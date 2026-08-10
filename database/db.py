@@ -1030,6 +1030,41 @@ def increment_user_xp(guild_id: str, user_id: str, user_name: str, delta: int) -
     return set_user_xp(guild_id, user_id, user_name, next_value)
 
 
+def reset_guild_xp(guild_id: str) -> int:
+    """Remet à zéro l'XP de tous les membres du serveur. Retourne le nombre d'entrées supprimées."""
+    client = _ensure_client()
+    if not client:
+        with _LOCAL_XP_LOCK:
+            data = _load_local_xp()
+            removed = len(data.get("xp", {}).get(guild_id, {}))
+            data.setdefault("xp", {})[guild_id] = {}
+            _save_local_xp(data)
+        return removed
+
+    _migrate_local_xp_to_supabase()
+    try:
+        resp = (
+            client.table("user_xp")
+            .select("user_id", count="exact")
+            .eq("guild_id", guild_id)
+            .execute()
+        )
+        removed = resp.count if resp.count is not None else len(resp.data or [])
+        client.table("user_xp").delete().eq("guild_id", guild_id).execute()
+    except Exception as exc:
+        logger.error("Erreur reset_guild_xp: %s", exc)
+        return 0
+
+    # On nettoie aussi le fallback local au cas où il contiendrait des données du serveur
+    with _LOCAL_XP_LOCK:
+        data = _load_local_xp()
+        if guild_id in data.get("xp", {}):
+            data["xp"][guild_id] = {}
+            _save_local_xp(data)
+
+    return removed
+
+
 def get_top_xp(guild_id: str, limit: int = 10) -> list[dict[str, Any]]:
     client = _ensure_client()
     if not client:
