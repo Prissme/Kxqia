@@ -14,7 +14,7 @@ import asyncio
 import datetime
 import logging
 from collections import defaultdict
-from typing import Optional
+from typing import Callable, Optional
 
 import discord
 from discord.ext import commands
@@ -109,13 +109,23 @@ def _is_eligible(member: discord.Member, channel: discord.VoiceChannel) -> bool:
 
 # ── Tâche de fond principale ──────────────────────────────────────────────────
 
-async def voice_xp_loop(bot: commands.Bot, db, xp_to_level_fn, handle_level_up_fn, max_xp: int) -> None:
+async def voice_xp_loop(
+    bot: commands.Bot,
+    db,
+    xp_to_level_fn,
+    handle_level_up_fn,
+    max_xp: int,
+    quest_tick_fn: Optional[Callable] = None,
+) -> None:
     """
     Tâche asyncio à lancer dans on_ready :
-        bot.loop.create_task(voice_xp_loop(bot, db, _xp_to_level, _handle_level_up, MAX_XP))
+        bot.loop.create_task(voice_xp_loop(bot, db, _xp_to_level, _handle_level_up, MAX_XP, _quest_voice_tick))
 
     Toutes les 60 secondes, parcourt tous les salons vocaux de tous les guilds
     et accorde l'XP aux membres éligibles.
+
+    `quest_tick_fn(channel, member)` est appelée (si fournie) une fois par minute
+    pour chaque membre éligible, afin de faire progresser la quête vocale.
     """
     await bot.wait_until_ready()
     logger.info("Tâche XP vocal démarrée.")
@@ -138,6 +148,12 @@ async def voice_xp_loop(bot: commands.Bot, db, xp_to_level_fn, handle_level_up_f
                     user_id = member.id
                     guild_id_str = str(guild_id)
                     user_id_str = str(user_id)
+
+                    if quest_tick_fn is not None:
+                        try:
+                            await quest_tick_fn(channel, member)
+                        except Exception:
+                            logger.exception("Erreur dans quest_tick_fn pour %s", member)
 
                     actual_xp = _add_daily_voice_xp(guild_id, user_id, VOICE_XP_PER_MINUTE)
                     if actual_xp <= 0:
