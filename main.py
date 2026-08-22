@@ -81,6 +81,34 @@ DAILY_XP_REDUCTION = 0.25
 _xp_last_gain_at: dict[tuple[int, int], datetime.datetime] = {}
 _xp_react_cooldown: dict[tuple[int, int, int], datetime.datetime] = {}
 
+# ── Système de quêtes journalières ──────────────────────────────────────────
+QUEST_MESSAGE_COOLDOWN_SECONDS = 20
+LEVEL_UP_MESSAGE_DELETE_AFTER = 8  # secondes avant auto-suppression du message de level up
+
+# Chaque type de quête possède plusieurs paliers de difficulté (cible, récompense XP).
+QUEST_TEMPLATES: dict[str, list[dict]] = {
+    "messages": [
+        {"target": 15, "reward": 200, "label": "Envoyer {target} messages"},
+        {"target": 35, "reward": 600, "label": "Envoyer {target} messages"},
+        {"target": 70, "reward": 1400, "label": "Envoyer {target} messages"},
+    ],
+    "voice": [
+        {"target": 10, "reward": 250, "label": "Passer {target} minutes en vocal (actif, non muet)"},
+        {"target": 30, "reward": 700, "label": "Passer {target} minutes en vocal (actif, non muet)"},
+        {"target": 60, "reward": 1600, "label": "Passer {target} minutes en vocal (actif, non muet)"},
+    ],
+    "reactions": [
+        {"target": 5, "reward": 300, "label": "Obtenir {target} réactions sur tes messages"},
+        {"target": 15, "reward": 900, "label": "Obtenir {target} réactions sur tes messages"},
+        {"target": 30, "reward": 3000, "label": "Obtenir {target} réactions sur tes messages"},
+    ],
+}
+QUEST_TYPE_EMOJIS = {"messages": "💬", "voice": "🎙️", "reactions": "❤️"}
+
+# { guild_id: { user_id: {"date": "AAAA-MM-JJ", "quests": [ {...}, ... ]} } }
+_quest_state: dict[int, dict[int, dict]] = defaultdict(dict)
+_quest_msg_cooldown: dict[tuple[int, int], datetime.datetime] = {}
+
 # Le salon Discord où envoyer le message
 ROLE_CHANNEL_ID = 1267617798658457732
 
@@ -199,11 +227,12 @@ async def reset_daily_xp():
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(days=1)
         wait_seconds = (midnight - now).total_seconds()
         await asyncio.sleep(wait_seconds)
-        global _daily_xp, _last_xp_reset
+        global _daily_xp, _last_xp_reset, _quest_state
         _daily_xp = defaultdict(lambda: defaultdict(int))
         _last_xp_reset = datetime.datetime.utcnow()
         reset_daily_voice_xp()
-        logger.info("Reset quotidien des XP effectué.")
+        _quest_state = defaultdict(dict)
+        logger.info("Reset quotidien des XP et des quêtes effectué.")
 
 async def update_top1_xp_role():
     """Toutes les heures : attribue TOP1_XP_ROLE_ID au membre #1 XP
@@ -430,6 +459,93 @@ def _get_user_rank(guild_id: int, user_id: int) -> tuple[Optional[int], Optional
         return None, None
 
 
+def _today_str() -> str:
+    return datetime.datetime.utcnow().date().isoformat()
+
+
+def _generate_daily_quests() -> list[dict]:
+    """Tire 3 quêtes journalières, une par type (messages / vocal / réactions),
+    chacune avec un palier de difficulté aléatoire."""
+    quests = []
+    for quest_type, templates in QUEST_TEMPLATES.items():
+        template = random.choice(templates)
+        quests.append({
+            "type": quest_type,
+            "target": template["target"],
+            "reward": template["reward"],
+            "label": template["label"].format(target=template["target"]),
+            "progress": 0,
+            "completed": False,
+        })
+    return quests
+
+
+def _get_user_quests(guild_id: int, user_id: int) -> list[dict]:
+    """Retourne les quêtes du jour pour l'utilisateur, en les régénérant si la date a changé."""
+    guild_state = _quest_state[guild_id]
+    entry = guild_state.get(user_id)
+    today = _today_str()
+    if entry is None or entry.get("date") != today:
+        entry = {"date": today, "quests": _generate_daily_quests()}
+        guild_state[user_id] = entry
+    return entry["quests"]
+
+
+async def _grant_quest_reward(
+    channel: discord.abc.Messageable,
+    member: discord.Member,
+    quest: dict,
+) -> None:
+    """Attribue l'XP de récompense d'une quête terminée (hors plafond journalier normal)."""
+    try:
+        guild_id_str = str(member.guild.id)
+        user_id_str = str(member.id)
+        current = db.get_user_xp(guild_id_str, user_id_str)
+        current_xp = int(current.get('xp', 0) or 0)
+        if current_xp >= MAX_XP:
+            return
+
+        old_level = _xp_to_level(current_xp)
+        new_xp = min(MAX_XP, current_xp + quest["reward"])
+        db.set_user_xp(guild_id_str, user_id_str, str(member), new_xp)
+
+        try:
+            await channel.send(
+                f"✅ {member.mention} a terminé la quête **{quest['label']}** — "
+                f"+**{quest['reward']} XP** !"
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        new_level = _xp_to_level(new_xp)
+        if new_level > old_level:
+            await _handle_level_up(channel, member, old_level, new_level, new_xp)
+    except Exception:
+        logger.exception("Erreur lors de l'attribution de la récompense de quête")
+
+
+async def _progress_quest(
+    channel: discord.abc.Messageable,
+    member: discord.Member,
+    quest_type: str,
+    amount: int = 1,
+) -> None:
+    """Avance la progression d'une quête active du type donné, et distribue la
+    récompense si elle vient d'être complétée."""
+    if not isinstance(member, discord.Member) or member.bot:
+        return
+
+    quests = _get_user_quests(member.guild.id, member.id)
+    quest = next((q for q in quests if q["type"] == quest_type and not q["completed"]), None)
+    if quest is None:
+        return
+
+    quest["progress"] = min(quest["target"], quest["progress"] + amount)
+    if quest["progress"] >= quest["target"]:
+        quest["completed"] = True
+        await _grant_quest_reward(channel, member, quest)
+
+
 async def _grant_message_xp(message: discord.Message) -> None:
     if message.guild is None:
         return
@@ -467,6 +583,28 @@ async def _grant_message_xp(message: discord.Message) -> None:
         await _handle_level_up(message.channel, message.author, old_level, new_level, new_xp)
 
 
+async def _quest_voice_tick(channel: discord.abc.Messageable, member: discord.Member) -> None:
+    """Appelée toutes les minutes par voice_xp_loop pour chaque membre éligible."""
+    await _progress_quest(channel, member, "voice", 1)
+
+
+async def _track_quest_message(message: discord.Message) -> None:
+    """Fait progresser la quête 'messages' (avec cooldown anti-spam dédié)."""
+    if message.guild is None or not isinstance(message.author, discord.Member):
+        return
+    if message.author.bot:
+        return
+
+    key = (message.guild.id, message.author.id)
+    now = datetime.datetime.utcnow()
+    last = _quest_msg_cooldown.get(key)
+    if last and (now - last).total_seconds() < QUEST_MESSAGE_COOLDOWN_SECONDS:
+        return
+    _quest_msg_cooldown[key] = now
+
+    await _progress_quest(message.channel, message.author, "messages", 1)
+
+
 async def _grant_reaction_xp(reaction: discord.Reaction, reactor: discord.Member) -> None:
     message = reaction.message
     if message.guild is None:
@@ -492,6 +630,8 @@ async def _grant_reaction_xp(reaction: discord.Reaction, reactor: discord.Member
         _increment_reaction_count(guild_id, author.id, str(author), current + 1)
     except Exception:
         pass
+
+    await _progress_quest(message.channel, author, "reactions", 1)
 
     base_xp = XP_PER_REACTION
     actual_xp = _add_daily_xp(guild_id, author.id, base_xp)
@@ -543,15 +683,32 @@ async def _handle_level_up(
 
         if card_buf:
             card_buf.seek(0)
-            await channel.send(file=discord.File(card_buf, filename=fname))
+            sent = await channel.send(file=discord.File(card_buf, filename=fname))
         else:
             # Fallback texte minimaliste si la génération échoue
-            await channel.send(f"🎉 {member.mention} — **Niveau {new_level}** !")
+            sent = await channel.send(f"🎉 {member.mention} — **Niveau {new_level}** !")
+        _schedule_message_deletion(sent, LEVEL_UP_MESSAGE_DELETE_AFTER)
     except Exception:
         try:
-            await channel.send(f"🎉 {member.mention} — **Niveau {new_level}** !")
+            sent = await channel.send(f"🎉 {member.mention} — **Niveau {new_level}** !")
+            _schedule_message_deletion(sent, LEVEL_UP_MESSAGE_DELETE_AFTER)
         except Exception:
             pass
+
+
+def _schedule_message_deletion(message: Optional[discord.Message], delay: float) -> None:
+    """Planifie la suppression d'un message après `delay` secondes, sans bloquer l'appelant."""
+    if message is None:
+        return
+
+    async def _delete_later() -> None:
+        await asyncio.sleep(delay)
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+            pass
+
+    asyncio.create_task(_delete_later())
 
 
 def _get_reaction_count(guild_id: int, user_id: int) -> int:
@@ -1007,7 +1164,7 @@ async def on_ready():
     bot.loop.create_task(reset_daily_xp())
     bot.loop.create_task(update_top1_xp_role())
     bot.loop.create_task(update_topxp_cache())
-    bot.loop.create_task(voice_xp_loop(bot, db, _xp_to_level, _handle_level_up, MAX_XP))
+    bot.loop.create_task(voice_xp_loop(bot, db, _xp_to_level, _handle_level_up, MAX_XP, _quest_voice_tick))
 
     # Correction de la boucle for (Ligne 965 qui bloquait tout)
     for guild in bot.guilds:
@@ -1082,6 +1239,7 @@ async def on_message(message: discord.Message):
                 return
 
     await _grant_message_xp(message)
+    await _track_quest_message(message)
     await bot.process_commands(message)
     try:
         await batch_logger.log({
@@ -1310,6 +1468,39 @@ async def xp_command_prefix(ctx: commands.Context, member: Optional[discord.Memb
         )
 
 
+@bot.command(name='quests')
+async def quests_cmd(ctx: commands.Context):
+    if ctx.guild is None:
+        await ctx.send('Cette commande doit être utilisée sur un serveur.')
+        return
+    if not isinstance(ctx.author, discord.Member):
+        return
+
+    quests = _get_user_quests(ctx.guild.id, ctx.author.id)
+
+    lines = []
+    for quest in quests:
+        emoji = QUEST_TYPE_EMOJIS.get(quest["type"], "📌")
+        if quest["completed"]:
+            lines.append(f"{emoji} ~~{quest['label']}~~ ✅ — **{quest['reward']} XP** (terminée)")
+        else:
+            bar = _build_progress_bar(quest["progress"], quest["target"])
+            lines.append(
+                f"{emoji} **{quest['label']}**\n"
+                f"{bar} ({quest['progress']}/{quest['target']}) — récompense : **{quest['reward']} XP**"
+            )
+
+    embed = discord.Embed(
+        title=f"📜 Quêtes journalières de {ctx.author.display_name}",
+        description="\n\n".join(lines),
+        color=0x5865F2,
+    )
+    embed.set_footer(text="Les quêtes se renouvellent chaque jour à minuit UTC.")
+    if ctx.author.display_avatar:
+        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+    await ctx.send(embed=embed)
+
+
 @bot.command(name='reactlb')
 async def reactlb(ctx: commands.Context):
     if ctx.guild is None:
@@ -1387,7 +1578,8 @@ async def help_user(interaction: discord.Interaction):
             "`/topxp` — Voir le classement XP du serveur\n"
             "`!xp [membre]` — Alias préfixe (image seule)\n"
             "`!rewards` — Voir tous les rôles de récompense XP\n"
-            "`!reactlb` — Classement des réactions reçues"
+            "`!reactlb` — Classement des réactions reçues\n"
+            "`!quests` — Voir tes 3 quêtes journalières et leur progression"
         ),
         inline=False,
     )
