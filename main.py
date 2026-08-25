@@ -962,6 +962,171 @@ async def _get_cached_topxp_data(guild_id: int) -> Optional[list]:
         return None
 
 
+class StealOrShareGame:
+    """État partagé d'une partie Steal or Share entre deux joueurs."""
+
+    def __init__(self, player1: discord.Member, player2: discord.Member, pot: int):
+        self.player1 = player1
+        self.player2 = player2
+        self.pot = pot
+        self.choices: dict[int, str] = {}  # user_id -> "share" | "steal"
+        self.resolved = False
+
+    def other(self, user_id: int) -> discord.Member:
+        return self.player2 if user_id == self.player1.id else self.player1
+
+    @property
+    def both_chose(self) -> bool:
+        return self.player1.id in self.choices and self.player2.id in self.choices
+
+    def resolve(self) -> tuple[int, int, str]:
+        """Retourne (xp_joueur1, xp_joueur2, résumé_texte)."""
+        c1 = self.choices[self.player1.id]
+        c2 = self.choices[self.player2.id]
+
+        if c1 == "share" and c2 == "share":
+            half = self.pot // 2
+            return half, half, f"Les deux joueurs ont **partagé** — chacun repart avec **{half} XP**."
+        if c1 == "steal" and c2 == "steal":
+            return 0, 0, "Les deux joueurs ont **volé** — personne ne repart avec de l'XP !"
+        # Un partage, un vol : le voleur rafle tout
+        if c1 == "steal":
+            return self.pot, 0, f"{self.player1.mention} a **volé** pendant que {self.player2.mention} partageait — {self.player1.mention} repart avec **{self.pot} XP** !"
+        else:
+            return 0, self.pot, f"{self.player2.mention} a **volé** pendant que {self.player1.mention} partageait — {self.player2.mention} repart avec **{self.pot} XP** !"
+
+
+class StealOrShareChoiceView(discord.ui.View):
+    """Vue privée envoyée à un joueur pour faire son choix (partager / voler)."""
+
+    def __init__(self, game: StealOrShareGame, player: discord.Member, on_resolve):
+        super().__init__(timeout=120)
+        self.game = game
+        self.player = player
+        self.on_resolve = on_resolve
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.player.id:
+            await interaction.response.send_message("Ce choix ne t'est pas destiné.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.player.id not in self.game.choices:
+            self.game.choices[self.player.id] = "steal"  # forfait = vol par défaut
+            if self.game.both_chose and not self.game.resolved:
+                self.game.resolved = True
+                await self.on_resolve(self.game)
+
+    async def _choose(self, interaction: discord.Interaction, choice: str):
+        if self.player.id in self.game.choices:
+            await interaction.response.send_message("Tu as déjà fait ton choix.", ephemeral=True)
+            return
+
+        self.game.choices[self.player.id] = choice
+        for child in self.children:
+            child.disabled = True
+
+        label = "partager 🤝" if choice == "share" else "voler 🔪"
+        await interaction.response.edit_message(
+            content=f"✅ Tu as choisi de **{label}**. En attente de {self.game.other(self.player.id).mention}...",
+            view=self,
+        )
+        self.stop()
+
+        if self.game.both_chose and not self.game.resolved:
+            self.game.resolved = True
+            await self.on_resolve(self.game)
+
+    @discord.ui.button(label='Partager', style=discord.ButtonStyle.success, emoji='🤝')
+    async def share(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._choose(interaction, "share")
+
+    @discord.ui.button(label='Voler', style=discord.ButtonStyle.danger, emoji='🔪')
+    async def steal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._choose(interaction, "steal")
+
+
+@bot.tree.command(name='stealorshare', description="Lance une partie Steal or Share entre deux joueurs pour un pot d'XP")
+@app_commands.describe(joueur1='Premier joueur', joueur2='Second joueur', xp='Montant d\'XP en jeu')
+@app_commands.checks.has_permissions(administrator=True)
+async def stealorshare(interaction: discord.Interaction, joueur1: discord.Member, joueur2: discord.Member, xp: int):
+    if xp <= 0:
+        await interaction.response.send_message("Le montant d'XP doit être positif.", ephemeral=True)
+        return
+    if joueur1.id == joueur2.id:
+        await interaction.response.send_message("Il faut deux joueurs différents.", ephemeral=True)
+        return
+    if joueur1.bot or joueur2.bot:
+        await interaction.response.send_message("Un bot ne peut pas participer.", ephemeral=True)
+        return
+
+    game = StealOrShareGame(joueur1, joueur2, xp)
+    announce_channel = interaction.channel
+
+    async def on_resolve(game: StealOrShareGame):
+        xp1, xp2, summary = game.resolve()
+        guild_id_str = str(interaction.guild.id)
+
+        for player, reward in ((game.player1, xp1), (game.player2, xp2)):
+            if reward <= 0:
+                continue
+            try:
+                current = db.get_user_xp(guild_id_str, str(player.id))
+                current_xp = int(current.get('xp', 0) or 0)
+                old_level = _xp_to_level(current_xp)
+                new_xp = min(MAX_XP, current_xp + reward)
+                db.set_user_xp(guild_id_str, str(player.id), str(player), new_xp)
+                new_level = _xp_to_level(new_xp)
+                if new_level > old_level:
+                    await _handle_level_up(announce_channel, player, old_level, new_level, new_xp)
+            except Exception:
+                logger.exception("Erreur lors de la distribution des gains Steal or Share")
+
+        try:
+            await announce_channel.send(
+                f"🎲 **Steal or Share — Résultat**\n{summary}"
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    view1 = StealOrShareChoiceView(game, joueur1, on_resolve)
+    view2 = StealOrShareChoiceView(game, joueur2, on_resolve)
+
+    dm_failed = []
+
+    try:
+        await joueur1.send(
+            f"🎲 **Steal or Share** — face à {joueur2.mention} sur **{interaction.guild.name}**\n"
+            f"Fais ton choix : partager ou voler le pot de **{xp} XP** ? (2 minutes)",
+            view=view1,
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        dm_failed.append(joueur1)
+
+    try:
+        await joueur2.send(
+            f"🎲 **Steal or Share** — face à {joueur1.mention} sur **{interaction.guild.name}**\n"
+            f"Fais ton choix : partager ou voler le pot de **{xp} XP** ? (2 minutes)",
+            view=view2,
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        dm_failed.append(joueur2)
+
+    warning = ""
+    if dm_failed:
+        noms = ", ".join(p.mention for p in dm_failed)
+        warning = f"\n⚠️ Impossible d'envoyer un MP à {noms} (MPs fermés) — la partie ne pourra pas se terminer normalement."
+
+    await interaction.response.send_message(
+        f"🎲 **Steal or Share** lancé par {interaction.user.mention} !\n"
+        f"{joueur1.mention} vs {joueur2.mention} — pot en jeu : **{xp} XP**\n"
+        f"Chaque joueur a reçu son choix en message privé. Vous avez 2 minutes pour choisir.{warning}"
+    )
+
+
 @bot.tree.command(name='topxp', description='Affiche le classement XP du serveur')
 async def topxp_slash(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -1634,6 +1799,7 @@ async def help_admin(interaction: discord.Interaction):
             "`/addxp [user] [amount]` — Ajoute de l'XP (ignore les limites)\n"
             "`/removexp [user] [amount]` — Retire de l'XP (min 0)\n"
             "`/resetxp` — Réinitialise l'XP de tout le serveur (irréversible)\n"
+            "`/stealorshare [joueur1] [joueur2] [xp]` — Lance un mini-jeu Steal or Share\n"
             "`!syncroles` — Synchronise les rôles de niveau\n"
             "`/setup_roles` — Relancer l'embed de sélection des rôles"
         ),
