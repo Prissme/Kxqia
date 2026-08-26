@@ -658,6 +658,32 @@ def remove_trust_level(user_id: str) -> None:
         save_config(Config.from_mapping(data))
 
 
+def get_security_whitelist() -> list[str]:
+    config = load_config()
+    return config.to_dict().get("security_whitelist", []) or []
+
+
+def add_to_security_whitelist(user_id: str) -> None:
+    config = load_config()
+    data = config.to_dict()
+    whitelist = set(data.get("security_whitelist", []) or [])
+    whitelist.add(user_id)
+    data["security_whitelist"] = sorted(whitelist)
+    save_config(Config.from_mapping(data))
+
+
+def remove_from_security_whitelist(user_id: str) -> bool:
+    config = load_config()
+    data = config.to_dict()
+    whitelist = set(data.get("security_whitelist", []) or [])
+    if user_id not in whitelist:
+        return False
+    whitelist.discard(user_id)
+    data["security_whitelist"] = sorted(whitelist)
+    save_config(Config.from_mapping(data))
+    return True
+
+
 # SECTION 5 - CREDITS
 _LOCAL_CREDITS_PATH = Path(__file__).with_name("local_credits.json")
 _LOCAL_CREDITS_LOCK = threading.Lock()
