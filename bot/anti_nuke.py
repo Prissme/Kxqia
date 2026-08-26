@@ -5,7 +5,7 @@ from typing import Any
 import discord
 from discord import AuditLogAction
 
-from bot.trust_levels import is_trusted
+from bot.trust_levels import is_trusted, is_security_whitelisted
 
 
 class AntiNuke:
@@ -59,6 +59,8 @@ class AntiNuke:
         if executor is None:
             return
         if self.bot.user and executor.id == self.bot.user.id:
+            return
+        if is_security_whitelisted(executor.id):
             return
 
         is_bot_executor = bool(getattr(executor, 'bot', False))
