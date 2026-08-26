@@ -21,3 +21,8 @@ def is_trusted(user_id: str, guild: discord.Guild, allow_owner: bool = True) -> 
         return allow_owner
     level = get_trust_level(user_id, guild)
     return level in {TRUST_LEVELS['OWNER'], TRUST_LEVELS['TRUSTED_ADMIN']}
+
+
+def is_security_whitelisted(user_id: str) -> bool:
+    """Utilisateur ou bot exempté des systèmes anti-nuke / anti-raid."""
+    return str(user_id) in set(db.get_security_whitelist())
