@@ -1049,6 +1049,44 @@ class StealOrShareChoiceView(discord.ui.View):
         await self._choose(interaction, "steal")
 
 
+@bot.tree.command(name='whitelist', description="Empêche un utilisateur ou un bot d'être flag par l'anti-nuke / anti-raid")
+@app_commands.describe(cible="Utilisateur ou bot à ajouter à la whitelist de sécurité")
+@app_commands.checks.has_permissions(administrator=True)
+async def whitelist_cmd(interaction: discord.Interaction, cible: discord.User):
+    try:
+        db.add_to_security_whitelist(str(cible.id))
+        await interaction.response.send_message(
+            f"✅ {cible.mention} est maintenant whitelisté(e) et ne peut plus être flag par l'anti-nuke / anti-raid.",
+            ephemeral=True,
+        )
+    except Exception as e:
+        logger.error(f"Erreur dans /whitelist: {e}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Une erreur est survenue.", ephemeral=True)
+
+
+@bot.tree.command(name='unwhitelist', description="Retire un utilisateur ou un bot de la whitelist de sécurité")
+@app_commands.describe(cible="Utilisateur ou bot à retirer de la whitelist de sécurité")
+@app_commands.checks.has_permissions(administrator=True)
+async def unwhitelist_cmd(interaction: discord.Interaction, cible: discord.User):
+    try:
+        removed = db.remove_from_security_whitelist(str(cible.id))
+        if removed:
+            await interaction.response.send_message(
+                f"✅ {cible.mention} a été retiré(e) de la whitelist de sécurité.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"ℹ️ {cible.mention} n'était pas dans la whitelist de sécurité.",
+                ephemeral=True,
+            )
+    except Exception as e:
+        logger.error(f"Erreur dans /unwhitelist: {e}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Une erreur est survenue.", ephemeral=True)
+
+
 @bot.tree.command(name='stealorshare', description="Lance une partie Steal or Share entre deux joueurs pour un pot d'XP")
 @app_commands.describe(joueur1='Premier joueur', joueur2='Second joueur', xp='Montant d\'XP en jeu')
 @app_commands.checks.has_permissions(administrator=True)
@@ -1807,7 +1845,11 @@ async def help_admin(interaction: discord.Interaction):
     )
     embed.add_field(
         name="🛡️ Sécurité",
-        value="`!securitycheck` — Vérifier la config Anti-Nuke / Anti-Raid",
+        value=(
+            "`!securitycheck` — Vérifier la config Anti-Nuke / Anti-Raid\n"
+            "`/whitelist [cible]` — Exempter un utilisateur ou un bot de l'anti-nuke / anti-raid\n"
+            "`/unwhitelist [cible]` — Retirer un utilisateur ou un bot de la whitelist"
+        ),
         inline=False,
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
