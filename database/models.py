@@ -17,6 +17,7 @@ class Config:
     cleanup: bool = True
     slow_mode: dict[str, Any] = None
     trust_levels: dict[str, str] = None
+    security_whitelist: list[str] = None
     raid: dict[str, Any] = None
     nuke: dict[str, Any] = None
 
@@ -38,6 +39,7 @@ class Config:
         mapping = mapping or {}
         slow_mode = mapping.get('slow_mode') or mapping.get('slowMode') or cls.default_slow_mode()
         trust_levels = mapping.get('trust_levels', {}) or mapping.get('trustLevels', {})
+        security_whitelist = mapping.get('security_whitelist') or mapping.get('securityWhitelist') or []
         raid = mapping.get('raid') or cls.default_raid()
         nuke = mapping.get('nuke') or cls.default_nuke()
         return cls(
@@ -52,6 +54,7 @@ class Config:
             cleanup=bool(mapping.get('cleanup', cls.cleanup)),
             slow_mode=_normalize_slow_mode(slow_mode),
             trust_levels=trust_levels if isinstance(trust_levels, dict) else {},
+            security_whitelist=list(security_whitelist) if isinstance(security_whitelist, (list, set, tuple)) else [],
             raid=_normalize_raid(raid),
             nuke=_normalize_nuke(nuke),
         )
