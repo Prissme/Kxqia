@@ -1444,15 +1444,6 @@ async def on_message(message: discord.Message):
     await _grant_message_xp(message)
     await _track_quest_message(message)
     await bot.process_commands(message)
-    try:
-        await batch_logger.log({
-            'type': 'message', 'level': 'info', 'message': 'Message reçu',
-            'user_id': str(message.author.id), 'user_name': str(message.author),
-            'channel_id': str(message.channel.id), 'guild_id': str(guild.id),
-            'channel_name': message.channel.name, 'metadata': {},
-        })
-    except Exception:
-        pass
     slow_mode_manager.handle_message(message)
 
     trap_word = bot.trap_words.get(guild.id)
