@@ -62,8 +62,12 @@ class BatchLogger:
         except Exception as exc:  # pragma: no cover - defensive
             self.failed_flushes += 1
             logger.error("Erreur lors du flush des logs: %s", exc)
-            # ré-insère les logs pour éviter la perte de données
-            self.queue.extendleft(reversed(batch))
+            # ré-insère les logs seulement si le lot reste petit : sinon la file
+            # grossit sans fin et chaque nouveau log relance un insert qui échoue
+            if len(batch) <= 1000:
+                self.queue.extendleft(reversed(batch))
+            else:
+                logger.warning("Lot de %d logs abandonné après échec", len(batch))
             return 0
 
 
