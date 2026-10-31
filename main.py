@@ -84,6 +84,7 @@ _xp_react_cooldown: dict[tuple[int, int, int], datetime.datetime] = {}
 # ── Système de quêtes journalières ──────────────────────────────────────────
 QUEST_MESSAGE_COOLDOWN_SECONDS = 20
 LEVEL_UP_MESSAGE_DELETE_AFTER = 8  # secondes avant auto-suppression du message de level up
+QUEST_REWARD_MESSAGE_DELETE_AFTER = 8  # secondes avant auto-suppression du message de quête terminée
 
 # Chaque type de quête possède plusieurs paliers de difficulté (cible, récompense XP).
 QUEST_TEMPLATES: dict[str, list[dict]] = {
@@ -510,10 +511,11 @@ async def _grant_quest_reward(
         db.set_user_xp(guild_id_str, user_id_str, str(member), new_xp)
 
         try:
-            await channel.send(
+            sent = await channel.send(
                 f"✅ {member.mention} a terminé la quête **{quest['label']}** — "
                 f"+**{quest['reward']} XP** !"
             )
+            _schedule_message_deletion(sent, QUEST_REWARD_MESSAGE_DELETE_AFTER)
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -1756,6 +1758,64 @@ async def security_check(ctx: commands.Context):
         color=0x2ecc71,
     )
     await ctx.send(embed=embed)
+
+
+@bot.command(name='giverole')
+@commands.has_permissions(manage_roles=True)
+async def give_role_cmd(ctx: commands.Context, role: discord.Role):
+    """Donne un rôle à tous les membres mentionnés dans le salon (historique complet)."""
+    if ctx.guild is None:
+        return
+    me = ctx.guild.me
+    if role.is_default() or role.managed or role >= me.top_role:
+        await ctx.send(
+            "❌ Impossible d'attribuer ce rôle (rôle @everyone, rôle géré par une intégration, "
+            "ou placé au-dessus de mon rôle)."
+        )
+        return
+
+    status_msg = await ctx.send("🔎 Analyse de l'historique du salon en cours...")
+
+    mentioned_ids: set[int] = set()
+    scanned = 0
+    async for message in ctx.channel.history(limit=None):
+        scanned += 1
+        for user in message.mentions:
+            if user.bot:
+                continue
+            mentioned_ids.add(user.id)
+
+    added = already = absent = failed = 0
+    total = len(mentioned_ids)
+    await status_msg.edit(
+        content=f"⏳ {scanned} messages analysés, {total} membre(s) mentionné(s). Attribution de {role.mention}..."
+    )
+
+    for user_id in mentioned_ids:
+        member = ctx.guild.get_member(user_id)
+        if member is None:
+            absent += 1
+            continue
+        if member.bot:
+            continue
+        if role in member.roles:
+            already += 1
+            continue
+        try:
+            await member.add_roles(role, reason=f"!giverole par {ctx.author}")
+            added += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+        await asyncio.sleep(0.5)
+
+    await status_msg.edit(
+        content=(
+            f"✅ Terminé pour {role.mention} — **{added}** ajouté(s), "
+            f"**{already}** déjà présent(s), **{absent}** absent(s) du serveur, "
+            f"**{failed}** échec(s) sur {total} membre(s) mentionné(s)."
+        ),
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
 
 @bot.tree.command(name='help', description='Liste des commandes disponibles pour les utilisateurs')
