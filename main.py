@@ -1363,6 +1363,7 @@ async def resetxp(interaction: discord.Interaction):
 async def on_ready():
     global _role_view_added
     _ensure_background_tasks()
+    await bot.change_presence(status=discord.Status.invisible)
     logger.info('%s est connecté!', bot.user)
 
     # Correction des indentations pour les tâches en arrière-plan
