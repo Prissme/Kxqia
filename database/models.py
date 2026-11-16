@@ -20,6 +20,7 @@ class Config:
     security_whitelist: list[str] = None
     raid: dict[str, Any] = None
     nuke: dict[str, Any] = None
+    hidden_level_users: list[str] = None
 
     @staticmethod
     def default_slow_mode() -> dict[str, Any]:
@@ -42,6 +43,7 @@ class Config:
         security_whitelist = mapping.get('security_whitelist') or mapping.get('securityWhitelist') or []
         raid = mapping.get('raid') or cls.default_raid()
         nuke = mapping.get('nuke') or cls.default_nuke()
+        hidden_level_users = mapping.get('hidden_level_users') or []
         return cls(
             prefix=mapping.get('prefix', cls.prefix),
             language=mapping.get('language', cls.language),
@@ -57,6 +59,7 @@ class Config:
             security_whitelist=list(security_whitelist) if isinstance(security_whitelist, (list, set, tuple)) else [],
             raid=_normalize_raid(raid),
             nuke=_normalize_nuke(nuke),
+            hidden_level_users=list(hidden_level_users) if isinstance(hidden_level_users, (list, set, tuple)) else [],
         )
 
     def to_dict(self) -> dict[str, Any]:
