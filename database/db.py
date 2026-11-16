@@ -662,6 +662,31 @@ def remove_trust_level(user_id: str) -> None:
         save_config(Config.from_mapping(data))
 
 
+def _level_hidden_key(guild_id: str, user_id: str) -> str:
+    return f"{guild_id}:{user_id}"
+
+
+def is_level_hidden(guild_id: str, user_id: str) -> bool:
+    config = load_config()
+    return _level_hidden_key(guild_id, user_id) in (config.hidden_level_users or [])
+
+
+def toggle_level_hidden(guild_id: str, user_id: str) -> bool:
+    """Bascule le rôle de niveau caché/visible. Retourne True si le rôle est maintenant caché."""
+    config = load_config()
+    key = _level_hidden_key(guild_id, user_id)
+    hidden = list(config.hidden_level_users or [])
+    if key in hidden:
+        hidden.remove(key)
+        now_hidden = False
+    else:
+        hidden.append(key)
+        now_hidden = True
+    config.hidden_level_users = hidden
+    save_config(config)
+    return now_hidden
+
+
 def get_security_whitelist() -> list[str]:
     config = load_config()
     return config.to_dict().get("security_whitelist", []) or []
