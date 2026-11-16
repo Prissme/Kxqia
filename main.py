@@ -417,6 +417,9 @@ async def _sync_level_roles_hardcoded(member: discord.Member, new_level: int) ->
         return None
 
     target_role_id = _get_level_role_for_level(new_level)
+    if db.is_level_hidden(str(guild.id), str(member.id)):
+        # Rôle caché : on retire tous les rôles de niveau et on n'en attribue aucun
+        target_role_id = None
     granted_role = None
 
     roles_to_remove = [
@@ -1831,6 +1834,7 @@ async def help_user(interaction: discord.Interaction):
         value=(
             "`/xp [membre]` — Voir son niveau et son XP\n"
             "`/topxp` — Voir le classement XP du serveur\n"
+            "`/hidelevel` — Cacher ou afficher ton rôle de niveau\n"
             "`!xp [membre]` — Alias préfixe (image seule)\n"
             "`!rewards` — Voir tous les rôles de récompense XP\n"
             "`!reactlb` — Classement des réactions reçues\n"
@@ -1955,6 +1959,30 @@ async def xp_slash(interaction: discord.Interaction, membre: Optional[discord.Me
             f"XP aujourd'hui: {daily_xp}/{DAILY_XP_CAP}\n"
             f"{progress_bar}"
         )
+
+
+@bot.tree.command(name='hidelevel', description='Cache ou affiche votre rôle de niveau XP')
+async def hidelevel_slash(interaction: discord.Interaction):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message('Cette commande doit être utilisée sur un serveur.', ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    member = interaction.user
+    now_hidden = db.toggle_level_hidden(str(guild.id), str(member.id))
+
+    # Applique tout de suite le changement (retire ou remet le rôle du palier actuel)
+    entry = db.get_user_xp(str(guild.id), str(member.id))
+    level = _xp_to_level(int(entry.get('xp', 0) or 0))
+    await _sync_level_roles_hardcoded(member, level)
+
+    if now_hidden:
+        msg = "🙈 Ton rôle de niveau est maintenant **caché**. Ton XP et ton niveau continuent de compter. Relance `/hidelevel` pour le réafficher."
+    else:
+        msg = "👁️ Ton rôle de niveau est de nouveau **visible**."
+    await interaction.followup.send(msg, ephemeral=True)
 
 
 def run_bot():
